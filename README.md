@@ -15,6 +15,7 @@ The site is hosted on **Vercel** (free plan). Data, logins and files live in **S
 | `assets/config.js` | **The only file you edit**: your Supabase address and key |
 | `assets/core.js`, `staff.js`, `customer.js`, `app.css` | Portal code and design |
 | `supabase/schema.sql` | Database tables, security rules and the FIFO logic. Run it once in Supabase. |
+| `api/admin-users.js` | Secure server function that creates, resets, disables and deletes logins (superadmin only) |
 | `vercel.json` | Vercel settings and security headers |
 
 ---
@@ -67,35 +68,38 @@ The anon key is meant to be public. Your data is protected by the database rules
 
 Vercel gives you an address like `https://cfs-portal.vercel.app`. You can add your own domain (e.g. `portal.yourcfs.in`) under **Vercel → Project → Settings → Domains**.
 
-## Step 6: Tell Supabase your website address
+## Step 6: Turn on user management (no emails)
 
-In Supabase, open **Authentication → URL Configuration**:
+Logins are created by the superadmin inside the portal: a **User ID + password**, with no sign-up page and no emails. This needs Supabase's secret key, which lives only on Vercel's server, never in the website files.
 
-- **Site URL:** your Vercel address, e.g. `https://cfs-portal.vercel.app`
-- **Redirect URLs:** add the same address.
+1. In Supabase: **Project Settings → API Keys → Legacy API Keys**, find **service_role**, click **Reveal** and copy it. Keep it secret.
+2. In Vercel: open the project → **Settings → Environment Variables** and add:
+   - `SUPABASE_URL` = your Project URL (e.g. `https://abcd.supabase.co`)
+   - `SUPABASE_SERVICE_ROLE_KEY` = the service_role key
+3. In Vercel: **Deployments** → the top deployment → **⋯ → Redeploy** (environment variables only apply after a redeploy).
+4. In Supabase: **Authentication → Sign In / Providers** → turn **off** "Allow new users to sign up". This blocks anyone from creating their own account. Logins you create in the portal still work.
 
-Without this, email confirmation and password-reset links will point to the wrong place.
+## Step 7: Create your superadmin account
 
-## Step 7: Create your superadmin account (do this straight away)
+The very first account becomes the superadmin automatically. On a fresh install, create it in Supabase: **Authentication → Users → Add user → Create new user**, enter your email and a password, and tick **Auto Confirm User**. Then sign in to the portal by typing that email in the User ID box.
 
-1. Open your Vercel address, click **Create account** and sign up with your own email.
-2. Confirm the email, then sign in.
-
-**The first account ever created becomes the superadmin automatically.** Everyone after that waits for approval. So create yours before you share the link.
+If you set up the portal before user IDs existed, your email login is already the superadmin and keeps working the same way.
 
 If someone else got in first, fix it in Supabase SQL Editor:
 
 ```sql
 update profiles set role = 'superadmin' where email = 'you@yourcompany.com';
-update profiles set role = 'pending'    where email = 'whoever@else.com';
 ```
 
-## Step 8: Add customers and people
+## Step 8: Create logins for staff and customers
 
 In the portal, open **Users & customers**.
 
-1. **Add customers:** give each one a short code (e.g. `ABCIMP`) and a name.
-2. **Staff:** ask staff to create an account from the sign-in page. They appear at the top as *Waiting for approval*. Give each one a role:
+1. **Add customers** first: a short code (e.g. `ABCIMP`) and a name.
+2. **Create a login** for each person: full name, User ID (e.g. `karthik.r`), password (one is generated for you) and role. For a customer contact, pick role **Customer** and their company.
+3. Click **Copy details** and send them the portal address, User ID and password (WhatsApp, SMS, whatever you use). The password is shown only once.
+4. People can change their own password with the **Password** button at the top after signing in.
+5. Forgotten password: click **Reset password** next to the person and share the new one. **Disable** blocks a login without deleting history; **Delete** removes it.
 
    | Role | Can do |
    |---|---|
@@ -104,15 +108,14 @@ In the portal, open **Users & customers**.
    | Operations team | Inventory only |
    | Warehouse supervisor | Start/complete jobs and photos |
    | Read only | View everything, change nothing |
+   | Customer | Only their own containers on the customer portal |
 
-3. **Customers:** ask each customer contact to create an account. Set their role to **Customer** and pick their company in the Customer column. One company can have several logins.
-4. **Inventory:** put the customer code in the **Customer** column of each container (or in the Excel upload). Only containers with that customer's code appear on their portal.
-5. **Photos:** in a container's photos and files, tick **Customer can see** on any file you want to share. Files are private to staff until you tick it.
+6. **Inventory:** put the customer code in the **Customer** column of each container (or in the Excel upload). Only containers with that customer's code appear on their portal.
+7. **Photos:** tick **Customer can see** on any file you want to share. Files are private to staff until you tick it.
 
 ## Recommended Supabase settings
 
-- **Authentication → Providers → Email:** keep **Confirm email** on.
-- **Authentication → Emails:** Supabase's built-in email sender is rate-limited (only a few emails per hour). Before going live with many customers, add your own SMTP in **Authentication → SMTP Settings** (Gmail Workspace, Zoho or Amazon SES all work).
+- No emails are needed: logins are created in the portal, so Supabase's email limits don't apply.
 - **Free plan pauses after 7 days of no activity.** Daily use keeps it awake. Upgrade to the Pro plan ($25/month) for production use and daily backups.
 - **Storage:** the free plan includes 1 GB for photos and files. Photos are resized to about 200–400 KB each.
 
@@ -121,7 +124,7 @@ In the portal, open **Users & customers**.
 - **FIFO is enforced by the database.** The Start button calls a database function that checks the queue order, the person's role and the bypass reason. Even someone calling the database directly cannot skip the queue without being a superadmin.
 - **Job fields are locked.** Status, start and finish times, mode and durations can only change through Start, Complete and Requeue. Saved arrival times (which set FIFO order) can only be changed by a superadmin, and every change is logged.
 - **Customers never read the containers table directly.** They get a limited view of their own containers only: no staff names, no audit log, no bypass reasons, and no other customers' data.
-- **New sign-ups see nothing** until a superadmin assigns a role.
+- **Only a superadmin can create logins.** The server function checks the caller is a signed-in superadmin before every action, and the secret key never reaches the browser.
 
 ## Updating later
 

@@ -3,6 +3,7 @@
 window.CFS_CONFIG = {
   SUPABASE_URL: "https://lphiefdnlofmljsorfat.supabase.co",
   SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxwaGllZmRubG9mbWxqc29yZmF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE5NjM1MDYsImV4cCI6MjEwNzUzOTUwNn0.uWYiHsL9-mnGlt0_zS5lwQ7VTFrRPl4GPDQks6_C3Wk",
+  LOGIN_DOMAIN: "cfs.local",   /* must match LOGIN_DOMAIN in Vercel (default cfs.local) */
   COMPANY_NAME: "CFS Destuffing Portal",
   SLA_MINUTES: 120
 };

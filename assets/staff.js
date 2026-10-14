@@ -36,7 +36,7 @@ function role() { return S.viewAs || S.me.role; }
 const can = { inv: () => ['superadmin','ops','both'].includes(role()), sup: () => ['superadmin','supervisor','both'].includes(role()), admin: () => role() === 'superadmin' };
 const canAttach = () => ['superadmin','both','ops','supervisor'].includes(role());
 const canDelAtt = a => canAttach() && (a.by === S.uid || can.admin() || can.inv());
-function who(uid) { if (!uid) return '—'; const p = S.profiles.get(uid); const n = p ? (p.full_name || p.email) : 'Team member'; return esc(uid === S.uid ? `${n} (you)` : n); }
+function who(uid) { if (!uid) return '—'; const p = S.profiles.get(uid); const n = p ? (p.full_name || p.username || p.email) : 'Team member'; return esc(uid === S.uid ? `${n} (you)` : n); }
 
 /* ---------- row mapping ---------- */
 function fromRow(r) {
@@ -550,23 +550,56 @@ function vAudit() {
 }
 
 /* --- users & customers --- */
+async function adminApi(body) {
+  const { data } = await sb.auth.getSession();
+  const r = await fetch('/api/admin-users', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (data?.session?.access_token || '') }, body: JSON.stringify(body) });
+  let d = {}; try { d = await r.json(); } catch (e) { d = { error: r.status === 404 ? 'The user-management function is not deployed yet. Redeploy the site on Vercel.' : `Server error (${r.status}).` }; }
+  if (!r.ok) throw { message: d.error || `Error ${r.status}` };
+  return d;
+}
+function genPass() { const c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'; const a = new Uint32Array(10); crypto.getRandomValues(a); return [...a].map(x => c[x % c.length]).join('') + '@' + (a[0] % 90 + 10); }
+const STAFF_ROLES = ['superadmin','both','ops','supervisor','readonly','customer'];
 function vTeam() {
   if (!can.admin()) return `<section class="panel"><div class="empty"><b>Only a superadmin can manage users.</b></div></section>`;
-  const order = { pending: 0, customer: 2 }, people = [...S.profiles.values()].sort((a, b) => (order[a.role] ?? 1) - (order[b.role] ?? 1) || (a.full_name || a.email || '').localeCompare(b.full_name || b.email || ''));
+  const order = { pending: 0, customer: 2 }, people = [...S.profiles.values()].sort((a, b) => (order[a.role] ?? 1) - (order[b.role] ?? 1) || (a.full_name || a.username || a.email || '').localeCompare(b.full_name || b.username || b.email || ''));
   const cust = [...S.customers.values()], cnt = new Map(), ucnt = new Map();
   S.containers.forEach(c => c.customer && c.status !== 'completed' && cnt.set(c.customer, (cnt.get(c.customer) || 0) + 1));
   S.profiles.forEach(p => p.customer_code && ucnt.set(p.customer_code, (ucnt.get(p.customer_code) || 0) + 1));
   const custOpts = sel => `<option value="">Pick customer…</option>` + cust.map(c => `<option value="${esc(c.code)}" ${sel === c.code ? 'selected' : ''}>${esc(c.code)} · ${esc(c.name)}</option>`).join('');
-  return `<section class="panel"><div class="sec-head"><div><h2>Users</h2><p>Anyone can create an account from the sign-in page. New accounts wait here until you give them a role. Staff roles see all containers; a <b>Customer</b> sees only containers with their customer code.</p></div></div>
-  <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Customer</th><th>Joined</th></tr></thead><tbody>
-  ${people.map(p => { const self = p.id === S.uid; return `<tr class="${p.role === 'pending' ? 'pending' : ''}"><td>${esc(p.full_name || '—')}${self ? ' (you)' : ''}</td><td>${esc(p.email || '')}</td>
-    <td><select data-role-uid="${esc(p.id)}" aria-label="Role for ${esc(p.email || '')}" ${self ? 'disabled title="You cannot change your own role"' : ''}>${['pending','superadmin','both','ops','supervisor','readonly','customer'].map(k => `<option value="${k}" ${p.role === k ? 'selected' : ''}>${ROLES[k]}</option>`).join('')}</select></td>
-    <td>${p.role === 'customer' ? `<select data-cust-uid="${esc(p.id)}" aria-label="Customer for ${esc(p.email || '')}">${custOpts(p.customer_code)}</select>${p.customer_code ? '' : ' <span class="iss bad">Pick a customer</span>'}` : '<span class="muted">—</span>'}</td>
-    <td class="n">${fmtD(p.created_at)}</td></tr>`; }).join('')}
+  const nu = S.nu || (S.nu = { full_name: '', username: '', password: genPass(), role: 'both', customer_code: '' });
+  const created = S.createdCred ? `<div class="note ok" style="display:grid;gap:6px"><b>Login created. Share these details with ${esc(S.createdCred.name)}:</b>
+      <span class="mono" id="cred-text" style="white-space:pre-line">Portal: ${esc(location.origin)}\nUser ID: ${esc(S.createdCred.username)}\nPassword: ${esc(S.createdCred.password)}</span>
+      <div class="actions"><button type="button" class="btn sm" data-act="cred-copy">Copy details</button><button type="button" class="btn sm ghost" data-act="cred-hide">Done</button></div>
+      <span class="hint">The password is shown only now. They can change it after signing in (Password button at the top).</span></div>` : '';
+  const ua = S.userAct;
+  const rowActs = p => {
+    const self = p.id === S.uid;
+    if (ua?.id === p.id && ua.type === 'reset') return `<form class="inline-form" data-form="user-reset" data-id="${esc(p.id)}"><input id="rp-${esc(p.id)}" name="password" value="${esc(ua.password)}" minlength="8" required aria-label="New password" class="mono" style="width:150px"><button class="btn sm primary" type="submit">Set password</button><button class="btn sm ghost" type="button" data-act="ua-cancel">Cancel</button></form>`;
+    if (ua?.id === p.id && ua.type === 'delete') return `<span class="iss bad">Delete this login?</span> <button class="btn sm danger" data-act="user-del-yes" data-id="${esc(p.id)}">Delete</button> <button class="btn sm ghost" data-act="ua-cancel">Keep</button>`;
+    return `<button class="btn sm" data-act="user-reset" data-id="${esc(p.id)}">Reset password</button>` + (self ? '' : ` <button class="btn sm ghost" data-act="user-${p.disabled ? 'enable' : 'disable'}" data-id="${esc(p.id)}">${p.disabled ? 'Enable' : 'Disable'}</button> <button class="btn sm ghost" data-act="user-del" data-id="${esc(p.id)}">Delete</button>`);
+  };
+  return `<section class="panel"><div class="sec-head"><div><h2>Create a login</h2><p>Make a User ID and password for each staff member or customer contact, then share the details with them. No emails are sent. Staff roles see all containers; a <b>Customer</b> login sees only containers with its customer code.</p></div></div>
+  ${created}
+  <form class="jobform" data-form="user-create">
+    <div class="row2"><label>Full name<input id="nu-name" name="full_name" value="${esc(nu.full_name)}" required placeholder="e.g. R. Karthik"></label>
+      <label>User ID<input id="nu-user" name="username" value="${esc(nu.username)}" required pattern="[a-z0-9][a-z0-9._\\-]{2,29}" autocapitalize="none" spellcheck="false" placeholder="e.g. karthik.r" title="3–30 characters: lowercase letters, digits, dot, dash or underscore"></label>
+      <label>Password<input id="nu-pass" name="password" value="${esc(nu.password)}" required minlength="8" class="mono" spellcheck="false"></label></div>
+    <div class="row2"><label>Role<select id="nu-role" name="role">${STAFF_ROLES.map(k => `<option value="${k}" ${nu.role === k ? 'selected' : ''}>${ROLES[k]}</option>`).join('')}</select></label>
+      ${nu.role === 'customer' ? `<label>Customer<select id="nu-cust" name="customer_code" required>${custOpts(nu.customer_code)}</select></label>` : '<span></span>'}</div>
+    ${nu.role === 'customer' && !cust.length ? '<div class="note">Add the customer below first, then create its login.</div>' : ''}
+    <div class="actions"><button class="btn primary" type="submit">Create login</button><button class="btn ghost" type="button" data-act="nu-gen">New password</button></div>
+  </form></section>
+  <section class="panel"><div class="sec-head"><div><h2>Users</h2><p>Change roles here. Disabled users cannot sign in. Every action is recorded in the audit log.</p></div></div>
+  <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>User ID</th><th>Role</th><th>Customer</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+  ${people.map(p => { const self = p.id === S.uid; return `<tr class="${p.role === 'pending' ? 'pending' : ''}"><td>${esc(p.full_name || '—')}${self ? ' (you)' : ''}</td><td class="mono">${esc(loginLabel(p))}</td>
+    <td><select data-role-uid="${esc(p.id)}" aria-label="Role for ${esc(loginLabel(p))}" ${self ? 'disabled title="You cannot change your own role"' : ''}>${['pending', ...STAFF_ROLES].map(k => `<option value="${k}" ${p.role === k ? 'selected' : ''}>${ROLES[k]}</option>`).join('')}</select></td>
+    <td>${p.role === 'customer' ? `<select data-cust-uid="${esc(p.id)}" aria-label="Customer for ${esc(loginLabel(p))}">${custOpts(p.customer_code)}</select>${p.customer_code ? '' : ' <span class="iss bad">Pick a customer</span>'}` : '<span class="muted">—</span>'}</td>
+    <td>${p.disabled ? '<span class="pill st-prio">Disabled</span>' : '<span class="pill st-completed">Active</span>'}</td>
+    <td style="white-space:nowrap">${rowActs(p)}</td></tr>`; }).join('')}
   </tbody></table></div></section>
   <section class="panel"><div class="sec-head"><div><h2>Customers</h2><p>The customer code goes in the Customer column of the inventory. Codes use capital letters, digits, - or _.</p></div></div>
   <form class="inline-form" data-form="cust-add"><label>Code<input id="c-code" name="code" required maxlength="30" placeholder="e.g. ABCIMP" style="text-transform:uppercase"></label><label style="flex:1 1 220px">Customer name<input id="c-name" name="name" required placeholder="e.g. ABC Imports Pvt Ltd"></label><button class="btn primary" type="submit">Add customer</button></form>
-  ${cust.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Code</th><th>Name</th><th>Active containers</th><th>Users</th><th></th></tr></thead><tbody>
+  ${cust.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Code</th><th>Name</th><th>Active containers</th><th>Logins</th><th></th></tr></thead><tbody>
   ${cust.map(c => `<tr><td class="mono">${esc(c.code)}</td><td><input type="text" id="cn-${esc(c.code)}" data-cust-name="${esc(c.code)}" value="${esc(c.name)}" aria-label="Name for ${esc(c.code)}" style="width:100%"></td><td class="n">${cnt.get(c.code) || 0}</td><td class="n">${ucnt.get(c.code) || 0}</td><td>${S.confirmDel === 'cust:' + c.code ? `<button class="btn sm danger" data-act="cust-del-yes" data-code="${esc(c.code)}">Delete</button> <button class="btn sm ghost" data-act="del-no">Keep</button>` : `<button class="btn sm ghost" data-act="cust-del" data-code="${esc(c.code)}">Delete</button>`}</td></tr>`).join('')}
   </tbody></table></div>` : `<div class="empty"><b>No customers yet.</b><span>Add one above, then put its code on that customer's containers.</span></div>`}</section>`;
 }
@@ -660,6 +693,14 @@ async function prioritise(id, fd) {
   await log('Moved to front of queue', c, fd.reason.trim()); S.open = null; S.form = {}; toast(`${c.containerNo} moved to the front.`, 'ok');
 }
 
+async function userAction(action, id, extra) {
+  const p = S.profiles.get(id);
+  try { await adminApi({ action, id, ...(extra || {}) });
+    if (action === 'delete') S.profiles.delete(id); else if (p && action !== 'reset') p.disabled = action === 'disable';
+    toast({ reset: 'Password changed. Share the new password with them.', disable: 'Login disabled.', enable: 'Login enabled.', delete: 'Login deleted.' }[action], 'ok'); S.userAct = null; render();
+  } catch (e) { toast(errMsg(e), 'bad'); }
+}
+
 /* ---------- events (bound once; ignored unless staff view is active) ---------- */
 const active = () => S && document.body.dataset.view === 'staff';
 document.addEventListener('click', e => {
@@ -688,6 +729,14 @@ document.addEventListener('click', e => {
     'f-all': () => { const q = S.ddq.trim().toLowerCase(); optsFor(k).filter(o => !q || String(o[1]).toLowerCase().includes(q)).forEach(o => S.f[k].add(o[0])); render(); },
     'f-reset': () => { resetFilters(); render(); },
     'f-unsaved': () => { S.f.unsaved = !S.f.unsaved; render(); },
+    'nu-gen': () => { S.nu.password = genPass(); render(); },
+    'cred-copy': async () => { const t = $('#cred-text')?.textContent || ''; try { await navigator.clipboard.writeText(t); toast('Copied.', 'ok'); } catch (err) { const r = document.createRange(); r.selectNodeContents($('#cred-text')); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Select and copy the highlighted text.', 'bad'); } },
+    'cred-hide': () => { S.createdCred = null; render(); },
+    'user-reset': () => { S.userAct = { id, type: 'reset', password: genPass() }; render(); },
+    'user-del': () => { S.userAct = { id, type: 'delete' }; render(); },
+    'ua-cancel': () => { S.userAct = null; render(); },
+    'user-disable': () => userAction('disable', id), 'user-enable': () => userAction('enable', id),
+    'user-del-yes': () => userAction('delete', id),
     'cust-del': () => { S.confirmDel = 'cust:' + b.dataset.code; render(); },
     'cust-del-yes': async () => { S.confirmDel = null; try { await must(sb.from('customers').delete().eq('code', b.dataset.code)); S.customers.delete(b.dataset.code); await log('Customer deleted', null, b.dataset.code); toast('Customer deleted.', 'ok'); } catch (err) { toast(err.code === '23503' ? 'This customer still has containers. Change or delete them first.' : errMsg(err), 'bad'); } render(); },
   };
@@ -699,7 +748,15 @@ document.addEventListener('submit', async e => {
   const fd = Object.fromEntries(new FormData(f)); S.busy = true; f.querySelectorAll('button').forEach(x => x.disabled = true);
   try {
     const id = f.dataset.id;
-    if (f.dataset.form === 'cust-add') {
+    if (f.dataset.form === 'user-create') {
+      const body = { action: 'create', full_name: fd.full_name, username: (fd.username || '').trim().toLowerCase(), password: fd.password, role: fd.role, customer_code: fd.customer_code || null };
+      const r = await adminApi(body);
+      S.createdCred = { name: fd.full_name, username: r.username, password: fd.password };
+      S.nu = null; toast(`Login ${r.username} created.`, 'ok');
+    } else if (f.dataset.form === 'user-reset') {
+      const pw = fd.password; await userAction('reset', id, { password: pw });
+      S.createdCred = { name: S.profiles.get(id)?.full_name || 'them', username: loginLabel(S.profiles.get(id)), password: pw };
+    } else if (f.dataset.form === 'cust-add') {
       const code = fd.code.trim().toUpperCase().replace(/\s+/g, '');
       if (!/^[A-Z0-9][A-Z0-9_-]{0,29}$/.test(code)) throw { message: 'Use capital letters, digits, - or _ for the code (up to 30).' };
       const row = await must(sb.from('customers').insert({ code, name: fd.name.trim() }).select().single()); S.customers.set(row.code, row);
@@ -720,7 +777,10 @@ document.addEventListener('input', e => {
     setEdit(key, k, v); t.closest('td').classList.toggle('dirty', !!(S.edits[key] && S.edits[key][k] !== undefined));
     if (wasBlank && !rowBlank(key)) scheduleRender(); else refreshRow(key); return;
   }
-  const f = t.closest('form[data-form]'); if (f && t.name) { S.form[t.name] = t.value; return; }
+  const f = t.closest('form[data-form]');
+  if (f && f.dataset.form === 'user-create' && t.name) { S.nu[t.name] = t.value; return; }
+  if (f && f.dataset.form === 'user-reset' && S.userAct) { S.userAct.password = t.value; return; }
+  if (f && t.name) { S.form[t.name] = t.value; return; }
   if (t.id === 'inv-q') { S.q = t.value; scheduleRender(); }
   if (t.id === 'dd-q') { S.ddq = t.value; scheduleRender(); }
 });
@@ -735,17 +795,18 @@ document.addEventListener('change', async e => {
   else if (t.dataset.vis) { try { await must(sb.from('attachments').update({ customer_visible: t.checked }).eq('id', t.dataset.vis)); const a = S.atts.get(t.dataset.vis); if (a) a.customer_visible = t.checked; toast(t.checked ? 'Shared with the customer.' : 'Hidden from the customer.', 'ok'); } catch (err) { t.checked = !t.checked; toast(errMsg(err), 'bad'); } }
   else if (t.dataset.roleUid) {
     const uid = t.dataset.roleUid, p = S.profiles.get(uid), patch = { role: t.value }; if (t.value !== 'customer') patch.customer_code = null;
-    try { await must(sb.from('profiles').update(patch).eq('id', uid)); Object.assign(p, patch); await log('User access changed', null, `${p.email}: ${ROLES[t.value]}`); toast(t.value === 'customer' ? 'Now pick which customer they belong to.' : 'Access updated.', 'ok'); render(); }
+    try { await must(sb.from('profiles').update(patch).eq('id', uid)); Object.assign(p, patch); await log('User access changed', null, `${loginLabel(p)}: ${ROLES[t.value]}`); toast(t.value === 'customer' ? 'Now pick which customer they belong to.' : 'Access updated.', 'ok'); render(); }
     catch (err) { toast(errMsg(err), 'bad'); render(); }
   }
   else if (t.dataset.custUid) {
     const uid = t.dataset.custUid, p = S.profiles.get(uid);
-    try { await must(sb.from('profiles').update({ customer_code: t.value || null }).eq('id', uid)); p.customer_code = t.value || null; await log('User access changed', null, `${p.email}: customer ${t.value || 'none'}`); toast('Customer link updated.', 'ok'); render(); }
+    try { await must(sb.from('profiles').update({ customer_code: t.value || null }).eq('id', uid)); p.customer_code = t.value || null; await log('User access changed', null, `${loginLabel(p)}: customer ${t.value || 'none'}`); toast('Customer link updated.', 'ok'); render(); }
     catch (err) { toast(errMsg(err), 'bad'); render(); }
   }
   else if (t.dataset.custName) {
     try { await must(sb.from('customers').update({ name: t.value.trim() }).eq('code', t.dataset.custName)); toast('Customer name saved.', 'ok'); } catch (err) { toast(errMsg(err), 'bad'); }
   }
+  else if (t.closest('form[data-form="user-create"]') && t.name) { S.nu[t.name] = t.value; if (t.name === 'role') render(); }
   else if (t.closest('form[data-form]') && t.name) S.form[t.name] = t.value;
 });
 document.addEventListener('keydown', e => {

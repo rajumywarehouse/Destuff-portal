@@ -24,6 +24,10 @@ create table if not exists profiles (
   customer_code text references customers(code) on update cascade on delete set null,
   created_at    timestamptz not null default now()
 );
+-- Login IDs created by the superadmin (no email needed) and disabled flag
+alter table profiles add column if not exists username text;
+alter table profiles add column if not exists disabled boolean not null default false;
+create unique index if not exists profiles_username on profiles (lower(username));
 
 create table if not exists containers (
   id            uuid primary key default gen_random_uuid(),
@@ -119,8 +123,9 @@ create or replace function is_admin() returns boolean language sql stable as $$
 create or replace function handle_new_user() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
-  insert into profiles (id, email, full_name, role)
+  insert into profiles (id, email, full_name, username, role)
   values (new.id, new.email, coalesce(new.raw_user_meta_data->>'full_name', ''),
+          nullif(lower(new.raw_user_meta_data->>'username'), ''),
           case when exists (select 1 from profiles where role = 'superadmin') then 'pending'::app_role else 'superadmin'::app_role end)
   on conflict (id) do nothing;
   return new;

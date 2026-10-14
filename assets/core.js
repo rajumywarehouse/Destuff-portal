@@ -78,7 +78,7 @@ const lockIcon = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="t
 const clipIcon = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M8.5 3.5 4.3 7.7a1 1 0 0 0 1.4 1.4l4.5-4.5a2 2 0 0 0-2.8-2.8L2.8 6.3a3 3 0 0 0 4.2 4.2L10.5 7" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
 function meChip(p) {
   const n = p.full_name || p.email || 'You', ini = n.split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase();
-  return `<span class="me"><span class="av">${esc(ini)}</span><span class="nm" title="${esc(p.email || '')}">${esc(n)}</span></span><button class="btn sm" data-act="signout">Sign out</button>`;
+  return `<span class="me"><span class="av">${esc(ini)}</span><span class="nm" title="${esc(loginLabel(p))}">${esc(n)}</span></span><button class="btn sm ghost" data-act="chpass">Password</button><button class="btn sm" data-act="signout">Sign out</button>`;
 }
 /* live clocks shared by both portals */
 function tick() {
@@ -101,22 +101,22 @@ function vSetup() {
     <p>This portal is not connected to its database yet. Open <code>assets/config.js</code> and fill in <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code> from Supabase → Project Settings → API, then redeploy.</p>
     <p class="muted">See README.md, steps 1 to 4.</p></div>`;
 }
+const LOGIN_DOMAIN = String(CFG.LOGIN_DOMAIN || 'cfs.local').toLowerCase();
+/* A plain User ID signs in as <id>@LOGIN_DOMAIN; anything with @ is used as an email (e.g. the first superadmin). */
+const loginEmail = v => { v = String(v || '').trim().toLowerCase(); return v.includes('@') ? v : `${v}@${LOGIN_DOMAIN}`; };
+const loginLabel = p => p?.username || p?.email || '';
 function vAuth() {
-  const t = APP.recovering ? 'reset' : APP.authTab, msg = APP.authMsg;
+  const msg = APP.authMsg;
   const brand = `<div class="brand">${brandSvg}<div><h1>${esc(CFG.COMPANY_NAME || 'CFS Destuffing Portal')}</h1><p>Container destuffing status for staff and customers</p></div></div>`;
-  let body;
-  if (t === 'reset') body = `<form data-auth="newpass"><label>New password<input id="a-pass" name="password" type="password" minlength="8" autocomplete="new-password" required></label><button class="btn primary" type="submit">Set new password</button></form>`;
-  else if (t === 'forgot') body = `<form data-auth="forgot"><label>Email<input id="a-email" name="email" type="email" autocomplete="email" required></label><button class="btn primary" type="submit">Email me a reset link</button><button type="button" class="linkbtn" data-auth-tab="in">Back to sign in</button></form>`;
-  else body = `<div class="auth-tabs" role="tablist"><button type="button" data-auth-tab="in" ${t === 'in' ? 'aria-current="page"' : ''}>Sign in</button><button type="button" data-auth-tab="up" ${t === 'up' ? 'aria-current="page"' : ''}>Create account</button></div>
-    ${t === 'up'
-      ? `<form data-auth="up"><label>Full name<input id="a-name" name="full_name" autocomplete="name" required></label><label>Company (customers)<input id="a-company" name="company" autocomplete="organization" placeholder="Optional"></label><label>Email<input id="a-email" name="email" type="email" autocomplete="email" required></label><label>Password<input id="a-pass" name="password" type="password" minlength="8" autocomplete="new-password" required></label><button class="btn primary" type="submit">Create account</button><p class="hint">New accounts are approved by the CFS team before they can see any data.</p></form>`
-      : `<form data-auth="in"><label>Email<input id="a-email" name="email" type="email" autocomplete="email" required></label><label>Password<input id="a-pass" name="password" type="password" autocomplete="current-password" required></label><button class="btn primary" type="submit">Sign in</button><button type="button" class="linkbtn" data-auth-tab="forgot">Forgot password?</button></form>`}`;
+  const body = APP.recovering
+    ? `<form data-auth="newpass"><label>New password<input id="a-pass" name="password" type="password" minlength="8" autocomplete="new-password" required></label><button class="btn primary" type="submit">Set new password</button></form>`
+    : `<form data-auth="in"><label>User ID<input id="a-user" name="user" autocomplete="username" autocapitalize="none" spellcheck="false" required></label><label>Password<input id="a-pass" name="password" type="password" autocomplete="current-password" required></label><button class="btn primary" type="submit">Sign in</button><p class="hint">Logins are created by the CFS team. Forgot your password? Ask your CFS superadmin to reset it.</p></form>`;
   return `<div class="auth"><div class="auth-card">${brand}${msg ? `<div class="note ${msg.kind === 'ok' ? 'ok' : ''}">${esc(msg.text)}</div>` : ''}${body}</div></div>`;
 }
 function vPending() {
   const p = APP.profile;
   return `<div class="auth"><div class="auth-card"><div class="brand">${brandSvg}<div><h1>${esc(CFG.COMPANY_NAME || 'CFS Destuffing Portal')}</h1></div></div>
-    <div class="note info">Your account <b>${esc(p?.email || '')}</b> is waiting for approval. The CFS team will give you access as staff or link it to your company as a customer. Sign in again once they confirm.</div>
+    <div class="note info">Your login <b>${esc(loginLabel(p))}</b> has no access yet. Ask your CFS superadmin to assign your role, then click Check again.</div>
     <div class="actions"><button class="btn" data-act="recheck">Check again</button><button class="btn ghost" data-act="signout">Sign out</button></div></div></div>`;
 }
 function showFrame(html) { document.body.dataset.view = 'frame'; $('#app').innerHTML = html; }
@@ -141,8 +141,9 @@ async function route() {
 function stopAll() { APP.mode = null; try { StaffApp.stop(); } catch (e) {} try { CustomerApp.stop(); } catch (e) {} }
 
 document.addEventListener('click', async e => {
-  const b = e.target.closest('[data-auth-tab],[data-act="signout"],[data-act="recheck"]'); if (!b) return;
-  if (b.dataset.authTab) { APP.authTab = b.dataset.authTab; APP.authMsg = null; showFrame(vAuth()); return; }
+  const b = e.target.closest('[data-act="signout"],[data-act="recheck"],[data-act="chpass"],[data-act="chpass-close"]'); if (!b) return;
+  if (b.dataset.act === 'chpass') { openChpass(); return; }
+  if (b.dataset.act === 'chpass-close') { closeChpass(); return; }
   if (b.dataset.act === 'signout') { await sb.auth.signOut(); return; }
   if (b.dataset.act === 'recheck') route();
 });
@@ -151,27 +152,39 @@ document.addEventListener('submit', async e => {
   const fd = Object.fromEntries(new FormData(f)), btn = f.querySelector('button[type=submit]'); btn.disabled = true;
   try {
     if (f.dataset.auth === 'in') {
-      const { error } = await sb.auth.signInWithPassword({ email: fd.email.trim(), password: fd.password });
+      const { error } = await sb.auth.signInWithPassword({ email: loginEmail(fd.user), password: fd.password });
       if (error) throw error;
-    } else if (f.dataset.auth === 'up') {
-      const name = fd.full_name.trim() + (fd.company?.trim() ? ` (${fd.company.trim()})` : '');
-      const { data, error } = await sb.auth.signUp({ email: fd.email.trim(), password: fd.password, options: { data: { full_name: name }, emailRedirectTo: location.origin + location.pathname } });
+      APP.authMsg = null;
+    } else if (f.dataset.auth === 'chpass') {
+      if (fd.password !== fd.password2) throw { message: 'The two passwords do not match.' };
+      const { error } = await sb.auth.updateUser({ password: fd.password });
       if (error) throw error;
-      if (!data.session) { APP.authTab = 'in'; APP.authMsg = { kind: 'ok', text: 'Account created. Open the confirmation link we emailed you, then sign in.' }; showFrame(vAuth()); }
-    } else if (f.dataset.auth === 'forgot') {
-      const { error } = await sb.auth.resetPasswordForEmail(fd.email.trim(), { redirectTo: location.origin + location.pathname });
-      if (error) throw error;
-      APP.authTab = 'in'; APP.authMsg = { kind: 'ok', text: 'If that email has an account, a reset link is on its way.' }; showFrame(vAuth());
+      closeChpass(); toast('Password changed.', 'ok'); return;
     } else if (f.dataset.auth === 'newpass') {
       const { error } = await sb.auth.updateUser({ password: fd.password });
       if (error) throw error;
       APP.recovering = false; toast('Password updated.', 'ok'); route();
     }
   } catch (err) {
-    APP.authMsg = { kind: 'bad', text: /Invalid login/i.test(err.message) ? 'Email or password is wrong.' : errMsg(err) };
+    if (f.dataset.auth === 'chpass') { const n = $('#chpass-msg'); if (n) { n.hidden = false; n.textContent = errMsg(err); } return; }
+    APP.authMsg = { kind: 'bad', text: /Invalid login/i.test(err.message) ? 'User ID or password is wrong.' : /banned/i.test(err.message) ? 'This login has been disabled. Contact your CFS superadmin.' : errMsg(err) };
     showFrame(vAuth());
   } finally { btn.disabled = false; }
 });
+
+function openChpass() {
+  closeChpass();
+  const d = document.createElement('div'); d.id = 'chpass';
+  d.innerHTML = `<div class="sheet" id="chpass-bg"><div class="sheet-in" role="dialog" aria-modal="true" aria-labelledby="chpass-h" style="max-width:420px">
+    <div class="sheet-h"><h2 id="chpass-h">Change your password</h2><button type="button" class="btn ghost" data-act="chpass-close">Close</button></div>
+    <form data-auth="chpass" class="jobform"><label>New password<input id="cp-1" name="password" type="password" minlength="8" autocomplete="new-password" required></label>
+    <label>Type it again<input id="cp-2" name="password2" type="password" minlength="8" autocomplete="new-password" required></label>
+    <div class="note" id="chpass-msg" hidden></div>
+    <div class="actions"><button class="btn primary" type="submit">Change password</button></div></form></div></div>`;
+  document.body.appendChild(d); $('#cp-1').focus();
+  d.addEventListener('click', e => { if (e.target.id === 'chpass-bg') closeChpass(); });
+}
+function closeChpass() { $('#chpass')?.remove(); }
 
 if (sb) {
   let lastUid;
