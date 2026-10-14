@@ -123,15 +123,15 @@ create or replace function my_customer() returns text
 language sql stable security definer set search_path = public as $$
   select customer_code from profiles where id = auth.uid() and role = 'customer'
 $$;
-create or replace function is_staff() returns boolean language sql stable as $$
+create or replace function is_staff() returns boolean language sql stable set search_path = public as $$
   select my_role() in ('superadmin','both','ops','supervisor','readonly') $$;
-create or replace function can_write() returns boolean language sql stable as $$
+create or replace function can_write() returns boolean language sql stable set search_path = public as $$
   select my_role() in ('superadmin','both','ops','supervisor') $$;
-create or replace function can_inv() returns boolean language sql stable as $$
+create or replace function can_inv() returns boolean language sql stable set search_path = public as $$
   select my_role() in ('superadmin','both','ops') $$;
-create or replace function can_sup() returns boolean language sql stable as $$
+create or replace function can_sup() returns boolean language sql stable set search_path = public as $$
   select my_role() in ('superadmin','both','supervisor') $$;
-create or replace function is_admin() returns boolean language sql stable as $$
+create or replace function is_admin() returns boolean language sql stable set search_path = public as $$
   select my_role() = 'superadmin' $$;
 
 -- ---------- New sign-ups get a profile. The very first account becomes superadmin. ----------
@@ -501,6 +501,12 @@ revoke execute on function start_job(uuid, text, text, int, text, text), complet
 grant execute on function start_job(uuid, text, text, int, text, text), complete_job(uuid, int, text),
   requeue_job(uuid, text), customer_containers(int), customer_attachments(uuid), customer_can_read_object(text)
   to authenticated;
+
+-- Internal helpers are not callable directly from the API
+revoke execute on function fifo_queue() from public, anon, authenticated;
+revoke execute on function handle_new_user() from public, anon, authenticated;
+revoke execute on function my_role(), my_customer() from public, anon;
+grant execute on function my_role(), my_customer() to authenticated;
 
 -- ---------- File storage for photos & files ----------
 insert into storage.buckets (id, name, public, file_size_limit)
