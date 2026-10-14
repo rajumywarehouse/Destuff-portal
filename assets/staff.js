@@ -48,10 +48,10 @@ function fromRow(r) {
     status: r.status, mode: r.mode, bay: r.bay, crew: r.crew, startRemarks: r.start_remarks, startedAt: ms(r.started_at), startedBy: r.started_by,
     queuePos: r.queue_pos, bypass: r.bypass, completedAt: ms(r.completed_at), durationMs: r.duration_ms == null ? null : +r.duration_ms, completedBy: r.completed_by,
     packages: r.packages, endRemarks: r.end_remarks, sample: r.sample, createdAt: ms(r.created_at), createdBy: r.created_by,
-    onHold: !!r.on_hold, holdReason: r.hold_reason || '', holdBy: r.hold_by, holdAt: ms(r.hold_at), customerRank: r.customer_rank };
+    onHold: !!r.on_hold, holdReason: r.hold_reason || '', holdBy: r.hold_by, holdAt: ms(r.hold_at), customerRank: r.customer_rank, seq: r.seq == null ? 0 : +r.seq };
 }
 function toDbVal(k, v) { if (k === 'cfsArrival') return v ? toISO(v) : null; if (k === 'pnrDate') return v || null; if (k === 'customer') return v || null; return v ?? ''; }
-const ovFrom = r => ({ id: r.container_id, at: ms(r.at), by: r.by, reason: r.reason });
+const ovFrom = r => ({ id: r.container_id, at: ms(r.at), by: r.by, reason: r.reason, sortKey: r.sort_key ? ms(r.sort_key) : Date.UTC(2000, 0, 1), sortSub: r.sort_sub == null ? 0 : +r.sort_sub, targetPos: r.target_pos });
 function attFrom(r) { const a = { ...r, cid: r.container_id, at: ms(r.at) }; if (r.thumb) S.thumbs[r.id] = r.thumb; delete a.thumb; return a; }
 const arrMs = c => ms(c.cfsArrival);
 
@@ -59,18 +59,19 @@ const arrMs = c => ms(c.cfsArrival);
    Base order: moved-to-front first, then CFS arrival. Held containers are out of the queue.
    Customer sequence: each customer's containers keep their slots; only their order within those slots follows the customer's choice. */
 function fifo() {
-  const base = [...S.containers.values()].filter(c => c.status === 'queued' && !c.onHold).sort((a, b) => {
-    const pa = S.overrides.get(a.id), pb = S.overrides.get(b.id);
-    if (!!pa !== !!pb) return pa ? -1 : 1;
-    if (pa && pb && pa.at !== pb.at) return pa.at - pb.at;
-    return (arrMs(a) || 0) - (arrMs(b) || 0) || (a.createdAt || 0) - (b.createdAt || 0) || a.containerNo.localeCompare(b.containerNo);
-  });
+  const live = [...S.containers.values()].filter(c => c.status === 'queued' && !c.onHold);
+  if (S.qpos && live.every(c => S.qpos.has(c.id))) return live.sort((a, b) => S.qpos.get(a.id) - S.qpos.get(b.id));
+  // local fallback while the server order is loading (same rules as fifo_queue)
+  const key = c => { const o = S.overrides.get(c.id); return o ? [o.sortKey, o.sortSub] : [arrMs(c) || 0, c.seq || 0]; };
+  const base = live.sort((a, b) => { const ka = key(a), kb = key(b); return ka[0] - kb[0] || ka[1] - kb[1] || a.containerNo.localeCompare(b.containerNo); });
   const slots = new Map();
   base.forEach((c, i) => { if (c.customer && !S.overrides.get(c.id)) { if (!slots.has(c.customer)) slots.set(c.customer, []); slots.get(c.customer).push(i); } });
   const out = base.slice();
   slots.forEach(pos => { const pref = pos.map(i => base[i]).sort((a, b) => (a.customerRank ?? 1e9) - (b.customerRank ?? 1e9)); pos.forEach((p, k) => { out[p] = pref[k]; }); });
   return out;
 }
+let qTimer = 0;
+function refreshQueue() { clearTimeout(qTimer); qTimer = setTimeout(async () => { if (!S) return; try { const rows = await must(sb.rpc('staff_queue')); S.qpos = new Map(rows.map(r => [r.container_id, r.pos])); scheduleRender(); } catch (e) {} }, 250); }
 const held = () => [...S.containers.values()].filter(c => dispStatus(c) === 'hold').sort((a, b) => (a.holdAt || 0) - (b.holdAt || 0));
 const running = () => [...S.containers.values()].filter(c => c.status === 'in_progress').sort((a, b) => a.startedAt - b.startedAt);
 
@@ -94,7 +95,7 @@ async function loadAll() {
     S.customers = new Map(cu.map(r => [r.code, r]));
     S.audit = au.map(r => ({ ...r, at: ms(r.at) }));
     S.atts = new Map(at.map(r => [r.id, attFrom(r)])); recount();
-    S.loaded = true; S.doneAll = null; scheduleRender();
+    S.loaded = true; S.doneAll = null; refreshQueue(); scheduleRender();
   } catch (e) { toast('Could not load data: ' + errMsg(e), 'bad'); }
 }
 function recount() { const m = new Map(); S.atts.forEach(a => m.set(a.cid, (m.get(a.cid) || 0) + 1)); S.attCount = m; }
@@ -110,7 +111,7 @@ function subscribe() {
       if (p.new.id === S.uid && (p.new.role !== S.me.role || p.new.customer_code !== S.me.customer_code)) { S.me = p.new; route(); } }),
   ];
   let ch = sb.channel('cfs-staff');
-  handlers.forEach(h => { ch = ch.on('postgres_changes', { event: '*', schema: 'public', table: h.table }, p => { h.fn(p); scheduleRender(); }); });
+  handlers.forEach(h => { ch = ch.on('postgres_changes', { event: '*', schema: 'public', table: h.table }, p => { h.fn(p); if (h.table === 'containers' || h.table === 'overrides') refreshQueue(); scheduleRender(); }); });
   S.ch = ch.subscribe(st => {
     if (st === 'SUBSCRIBED') { S.live = true; loadAll(); }
     else if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(st)) S.live = false;
@@ -161,7 +162,7 @@ async function clearSample() {
 /* ---------- rendering ---------- */
 let rq = 0; function scheduleRender() { if (rq || !S) return; rq = requestAnimationFrame(() => { rq = 0; render(); }); }
 function shell() {
-  $('#app').innerHTML = `<header class="top"><div class="top-in"><div class="brand">${brandSvg}<div><h1>${esc(CFG.COMPANY_NAME || 'CFS Destuffing Portal')}</h1><p>Import inventory · FIFO job queue · live destuffing clock</p></div></div><div class="hdr-right" id="hdr-right"></div></div><nav class="tabs" id="tabs" aria-label="Sections"></nav></header>
+  $('#app').innerHTML = `<header class="top"><div class="top-in"><div class="brand">${brandSvg}<div><h1>${esc(CFG.COMPANY_NAME || 'CFS Destuffing Portal')}</h1><p>Import LCL job queue and destuffing status</p></div></div><div class="hdr-right" id="hdr-right"></div></div><nav class="tabs" id="tabs" aria-label="Sections"></nav></header>
   <main id="main"><div class="skel">Loading live data…</div></main>
   <datalist id="sizes"><option value="20"></option><option value="40"></option><option value="40HC"></option><option value="45"></option></datalist><datalist id="custlist"></datalist><div id="sheet"></div>`;
 }
@@ -184,7 +185,7 @@ function vHeader() {
   const sel = S.me.role === 'superadmin'
     ? `<select id="viewas" aria-label="View the portal as">${['superadmin','both','ops','supervisor','readonly'].map(k => `<option value="${k === 'superadmin' ? '' : k}" ${(S.viewAs || '') === (k === 'superadmin' ? '' : k) ? 'selected' : ''}>${k === 'superadmin' ? 'Role: Superadmin' : 'Preview as: ' + ROLES[k]}</option>`).join('')}</select>`
     : `<span class="chip">${esc(ROLES[role()])}</span>`;
-  return `${sync}${sel}<span class="hdr-clock" id="hclock"></span>${meChip(S.me)}`;
+  return `${sync}${sel}<a class="btn sm ghost" href="#display" title="The warehouse display screen">Display screen</a><span class="hdr-clock" id="hclock"></span>${meChip(S.me)}`;
 }
 function vTabs() {
   const q = fifo().length, rn = running().length, pend = [...S.profiles.values()].filter(p => p.role === 'pending').length;
@@ -205,13 +206,12 @@ function vDash() {
   const avgW = startedToday.length ? startedToday.reduce((s, c) => s + (c.startedAt - arrMs(c)), 0) / startedToday.length : null;
   const q = fifo(), runs = running(), over = runs.filter(c => Date.now() - c.startedAt > SLA_MIN * 6e4).length;
   const modeCt = { manual: 0, mechanical: 0, combined: 0 }; [...today, ...runs].forEach(c => c.mode in modeCt && modeCt[c.mode]++); const mt = Object.values(modeCt).reduce((a, b) => a + b, 0);
-  const headWait = q[0] && arrMs(q[0]) ? `<span data-since="${arrMs(q[0])}">${dur(Date.now() - arrMs(q[0]))}</span>` : '—';
   return `
   <section class="pipe" aria-label="Container flow">
-    <button class="step s1" data-tab="inv" data-filter="awaiting"><span class="lbl">Awaiting arrival</span><b>${cnt.awaiting}</b><small>No CFS arrival time yet</small></button>
-    <button class="step s2" data-tab="queue"><span class="lbl">In job queue</span><b>${cnt.queued}</b><small>Head has waited ${headWait}${cnt.hold ? ` · <b>${cnt.hold} on hold</b>` : ''}</small></button>
-    <button class="step s3" data-tab="dash"><span class="lbl">Destuffing now</span><b>${cnt.in_progress}</b><small>Clock running</small></button>
-    <button class="step s4" data-tab="done"><span class="lbl">Completed today</span><b>${today.length}</b><small>${cnt.completed} in the last 31 days</small></button>
+    <button class="step s1" data-tab="inv" data-filter="awaiting"><span class="lbl">Awaiting arrival</span><b>${cnt.awaiting}</b></button>
+    <button class="step s2" data-tab="queue"><span class="lbl">In job queue</span><b>${cnt.queued}</b>${cnt.hold ? `<small>${cnt.hold} on hold</small>` : ''}</button>
+    <button class="step s3" data-tab="dash"><span class="lbl">Destuffing now</span><b>${cnt.in_progress}</b></button>
+    <button class="step s4" data-tab="done"><span class="lbl">Completed today</span><b>${today.length}</b></button>
   </section>
   <div class="cols">
     <section class="panel" aria-labelledby="h-run">
@@ -257,16 +257,16 @@ function qCard(c, i, full) {
   else if (head) acts += `<span class="lock">Next to start</span>`;
   else if (can.admin() && can.sup()) acts += `<button class="btn sm" data-act="open-bypass" data-id="${esc(c.id)}">Start out of turn</button>`;
   else acts += `<span class="lock">${lockIcon} Locked by FIFO · waits for position ${i}</span>`;
-  if (can.front() && !head) acts += pr ? `<button class="btn ghost sm" data-act="unprio" data-id="${esc(c.id)}">Remove priority</button>` : `<button class="btn ghost sm" data-act="open-prio" data-id="${esc(c.id)}">Move to front</button>`;
-  else if (can.front() && head && pr) acts += `<button class="btn ghost sm" data-act="unprio" data-id="${esc(c.id)}">Remove priority</button>`;
+  if (can.front()) acts += `<button class="btn ghost sm" data-act="open-prio" data-id="${esc(c.id)}">Move to position</button>`;
+  if (can.front() && pr) acts += `<button class="btn ghost sm" data-act="unprio" data-id="${esc(c.id)}">Back to FIFO place</button>`;
   if (can.hold()) acts += `<button class="btn ghost sm" data-act="open-hold" data-id="${esc(c.id)}">Hold</button>`;
-  const form = open === 'start' ? startForm(c, false, i) : open === 'bypass' ? startForm(c, true, i) : open === 'prio' ? prioForm(c) : open === 'hold' ? holdForm(c) : '';
+  const form = open === 'start' ? startForm(c, false, i) : open === 'bypass' ? startForm(c, true, i) : open === 'prio' ? prioForm(c, i) : open === 'hold' ? holdForm(c) : '';
   return `<article class="q ${head ? 'head' : ''} ${pr ? 'prio' : ''}">
     <div class="pos">${i + 1}<small>${head ? 'Next' : 'FIFO'}</small></div>
     <div class="q-main">
-      <div class="q-line"><span class="cno">${cnoHtml(c.containerNo)}</span><span class="pill st-mode">${esc(c.size || '—')}</span>${attBtn(c)}${pr ? `<span class="pill st-prio" title="${esc(pr.reason || '')}">Moved to front</span>` : ''}${c.customerRank != null && !pr ? `<span class="pill st-new" title="The customer chose the order of their own containers (their choice #${c.customerRank}). Other customers are not affected.">Customer sequence</span>` : ''}</div>
+      <div class="q-line"><span class="cno">${cnoHtml(c.containerNo)}</span><span class="pill st-mode">${esc(c.size || '—')}</span>${attBtn(c)}${pr ? `<span class="pill st-prio" title="${esc(pr.reason || '')}">Moved by staff</span>` : ''}${c.customerRank != null && !pr ? `<span class="pill st-new" title="The customer chose the order of their own containers (their choice #${c.customerRank}). Other customers are not affected.">Customer sequence</span>` : ''}</div>
       <div class="q-sub"><span>Arrived <b>${fmtT(c.cfsArrival)}</b></span><span>Waiting <b>${a ? `<span data-since="${a}">${dur(Date.now() - a)}</span>` : '—'}</b></span>${c.customer ? `<span>${esc(custName(c.customer))}</span>` : ''}${full ? `<span>${esc(c.liner || '—')} · ${esc(c.vessel || '—')}</span><span>${esc(c.item || '—')} · ${esc(c.consol || '')}</span><span>IGM ${esc(c.igmNo || '—')}</span>` : `<span>${esc(c.item || '')}</span>`}</div>
-      ${pr && full ? `<div class="note info">Moved to front: ${esc(pr.reason || 'no reason given')} — ${who(pr.by)}, ${fmtT(pr.at)}</div>` : ''}
+      ${pr && full ? `<div class="note info">Moved${pr.targetPos ? ` to position ${pr.targetPos}` : ''}: ${esc(pr.reason || 'no reason given')} — ${who(pr.by)}, ${fmtT(pr.at)}</div>` : ''}
       ${form || `<div class="actions">${acts}</div>`}
     </div></article>`;
 }
@@ -292,12 +292,13 @@ function requeueForm(c) {
     <label>Reason (required)<textarea id="f-reason" name="reason" required>${fv('reason')}</textarea></label>
     <div class="actions"><button type="submit" class="btn danger">Return to queue</button><button type="button" class="btn ghost" data-act="cancel">Cancel</button></div></form>`;
 }
-function prioForm(c) {
-  return `<form class="jobform" data-form="prio" data-id="${esc(c.id)}"><div class="note info">Moves this container to the front of the queue so the supervisor can start it next. Recorded in the audit log.</div>
+function prioForm(c, i) {
+  const n = fifo().length;
+  return `<form class="jobform" data-form="prio" data-id="${esc(c.id)}"><div class="note info">Currently at position ${i + 1} of ${n}. The container is placed just ahead of whatever is at the new position now, then moves up normally as jobs finish. Recorded in the audit log.</div>
+    <div class="row2"><label>New position (1 = front)<input id="f-pos" name="pos" type="number" min="1" max="${n}" inputmode="numeric" required value="${esc(S.form.pos ?? 1)}"></label></div>
     <label>Reason (required)<textarea id="f-reason" name="reason" required placeholder="e.g. Customs examination order, perishable cargo">${fv('reason')}</textarea></label>
-    <div class="actions"><button type="submit" class="btn primary">Move to front</button><button type="button" class="btn ghost" data-act="cancel">Cancel</button></div></form>`;
+    <div class="actions"><button type="submit" class="btn primary">Move</button><button type="button" class="btn ghost" data-act="cancel">Cancel</button></div></form>`;
 }
-
 function holdForm(c) {
   return `<form class="jobform" data-form="hold" data-id="${esc(c.id)}"><div class="note">The container leaves the job queue until the hold is released. It then goes back to its normal FIFO place. The customer sees "On hold" (not the reason).</div>
     <label>Reason for the hold (required)<textarea id="f-reason" name="reason" required placeholder="e.g. Duty not paid, customs hold, documents pending">${fv('reason')}</textarea></label>
@@ -381,12 +382,12 @@ function vInv() {
     return `<tr data-row="${esc(key)}" class="${iss.errs.length ? 'err' : ''}"><td class="rn">${i + 1}</td>${cells.join('')}<td class="act">${act}</td></tr>`;
   }).join('');
   const head = `<tr><th class="rn">#</th>${COLS.map((c, i) => `<th class="c-${c.k}">${c.short}</th>${i === 0 ? '<th>Status</th>' : ''}`).join('')}<th>Files</th></tr>`;
-  return `<section class="panel">
+  return `<section class="panel inv-panel ${S.full ? 'full' : ''}">
     <div class="sec-head"><div><h2>Container inventory</h2><p>A container joins the destuffing queue as soon as its CFS arrival date and time is filled in. Blank arrival means it has not reached the CFS yet. The customer code decides which customer sees the container on their portal.</p></div></div>
     <div class="toolbar">
       <div class="grow"><input type="search" id="inv-q" placeholder="Search container, customer, vessel, consol, IGM, item…" value="${esc(S.q)}" aria-label="Search inventory"></div>
       ${can.inv() ? `<button class="btn" data-act="add-rows">+ 5 rows</button><label class="btn file-btn">Upload Excel / CSV<input type="file" id="inv-file" accept=".xlsx,.xls,.csv"></label>` : ''}
-      <button class="btn" data-act="template">Download template</button><button class="btn" data-act="export-inv">Export this view</button>
+      <button class="btn" data-act="template">Download template</button><button class="btn" data-act="export-inv">Export this view</button><button class="btn" data-act="full" aria-pressed="${!!S.full}">${S.full ? 'Exit full screen' : 'Full screen'}</button>
       ${can.admin() ? (hasSample ? `<button class="btn ghost" data-act="sample-clear">Clear sample data</button>` : `<button class="btn ghost" data-act="sample-load">Load sample data</button>`) : ''}
     </div>
     ${pc ? `<div class="unsaved-banner" role="status"><span><b>${pc} row${pc > 1 ? 's are' : ' is'} not saved yet.</b> Other users and devices will not see ${pc > 1 ? 'them' : 'it'} until you click Save changes.</span><button class="btn primary" data-act="save">Save changes</button></div>` : ''}
@@ -586,7 +587,7 @@ async function adminApi(body) {
   return d;
 }
 function genPass() { const c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'; const a = new Uint32Array(10); crypto.getRandomValues(a); return [...a].map(x => c[x % c.length]).join('') + '@' + (a[0] % 90 + 10); }
-const STAFF_ROLES = ['superadmin','both','ops','supervisor','readonly','customer'];
+const STAFF_ROLES = ['superadmin','both','ops','supervisor','readonly','customer','portal'];
 function vTeam() {
   if (!can.admin()) return `<section class="panel"><div class="empty"><b>Only a superadmin can manage users.</b></div></section>`;
   const order = { pending: 0, customer: 2 }, people = [...S.profiles.values()].sort((a, b) => (order[a.role] ?? 1) - (order[b.role] ?? 1) || (a.full_name || a.username || a.email || '').localeCompare(b.full_name || b.username || b.email || ''));
@@ -606,7 +607,7 @@ function vTeam() {
     if (ua?.id === p.id && ua.type === 'delete') return `<span class="iss bad">Delete this login?</span> <button class="btn sm danger" data-act="user-del-yes" data-id="${esc(p.id)}">Delete</button> <button class="btn sm ghost" data-act="ua-cancel">Keep</button>`;
     return `<button class="btn sm" data-act="user-reset" data-id="${esc(p.id)}">Reset password</button>` + (self ? '' : ` <button class="btn sm ghost" data-act="user-${p.disabled ? 'enable' : 'disable'}" data-id="${esc(p.id)}">${p.disabled ? 'Enable' : 'Disable'}</button> <button class="btn sm ghost" data-act="user-del" data-id="${esc(p.id)}">Delete</button>`);
   };
-  return `<section class="panel"><div class="sec-head"><div><h2>Create a login</h2><p>Make a User ID and password for each staff member or customer contact, then share the details with them. No emails are sent. Staff roles see all containers; a <b>Customer</b> login sees only containers with its customer code.</p></div></div>
+  return `<section class="panel"><div class="sec-head"><div><h2>Create a login</h2><p>Make a User ID and password for each staff member or customer contact, then share the details with them. No emails are sent. Staff roles see all containers; a <b>Customer</b> login sees only containers with its customer code. A <b>Display screen</b> login is for the warehouse TV: it shows only the live jobs and queue, with no customer names.</p></div></div>
   ${created}
   <form class="jobform" data-form="user-create">
     <div class="row2"><label>Full name<input id="nu-name" name="full_name" value="${esc(nu.full_name)}" required placeholder="e.g. R. Karthik"></label>
@@ -717,8 +718,8 @@ async function completeJob(id, fd) {
 async function requeueJob(id, fd) { await must(sb.rpc('requeue_job', { p_id: id, p_reason: fd.reason || '' })); S.open = null; S.form = {}; toast('Returned to the queue.', 'ok'); }
 async function prioritise(id, fd) {
   const c = S.containers.get(id); if (!(fd.reason || '').trim()) return toast('Enter a reason.', 'bad');
-  await must(sb.from('overrides').insert({ container_id: id, reason: fd.reason.trim() }));
-  await log('Moved to front of queue', c, fd.reason.trim()); S.open = null; S.form = {}; toast(`${c.containerNo} moved to the front.`, 'ok');
+  const pos = await must(sb.rpc('move_in_queue', { p_id: id, p_pos: Math.max(1, parseInt(fd.pos, 10) || 1), p_reason: fd.reason.trim() }));
+  S.open = null; S.form = {}; toast(`${c.containerNo} moved to position ${pos}.`, 'ok');
 }
 
 async function userAction(action, id, extra) {
@@ -735,17 +736,18 @@ document.addEventListener('click', e => {
   if (!active()) return;
   if (e.target.id === 'sheet-bg') { closeSheet(); return; }
   const b = e.target.closest('[data-act],[data-tab]'); if (!b) return;
-  if (b.dataset.tab) { S.tab = b.dataset.tab; S.open = null; S.form = {}; S.confirmDel = null; if (b.dataset.filter) { resetFilters(); S.f.status = new Set([b.dataset.filter]); } render(); return; }
+  if (b.dataset.tab) { S.full = false; document.body.classList.remove('inv-full'); S.tab = b.dataset.tab; S.open = null; S.form = {}; S.confirmDel = null; if (b.dataset.filter) { resetFilters(); S.f.status = new Set([b.dataset.filter]); } render(); return; }
   const id = b.dataset.id, act = b.dataset.act, aid = b.dataset.aid, k = b.dataset.k;
   if (act.startsWith('open-')) { S.open = { type: act.slice(5), id }; S.form = {}; render(); const f = $('form[data-form] input,form[data-form] textarea'); if (f) f.focus({ preventScroll: true }); return; }
   const fns = {
     cancel: () => { S.open = null; S.form = {}; render(); },
-    unprio: async () => { const c = S.containers.get(id); try { await must(sb.from('overrides').delete().eq('container_id', id)); await log('Priority removed', c, ''); toast('Priority removed.', 'ok'); } catch (err) { toast(errMsg(err), 'bad'); } },
+    unprio: async () => { const c = S.containers.get(id); try { await must(sb.from('overrides').delete().eq('container_id', id)); await log('Back to FIFO place', c, ''); toast('Back to its normal FIFO place.', 'ok'); } catch (err) { toast(errMsg(err), 'bad'); } },
     'add-rows': () => { for (let i = 0; i < 5; i++) newRow(); render(); },
     save: saveGrid, discard: () => { S.edits = {}; S.newRows = []; S.f.unsaved = false; render(); },
     del: () => { S.confirmDel = b.dataset.key; render(); }, 'del-no': () => { S.confirmDel = null; render(); }, 'del-yes': () => deleteRow(b.dataset.key),
     template: downloadTemplate, 'export-inv': exportInv, 'export-done': exportDone, 'sample-load': loadSample, 'sample-clear': clearSample,
     'run-all': () => { S.runAll = !S.runAll; render(); },
+    full: () => { S.full = !S.full; document.body.classList.toggle('inv-full', S.full); render(); },
     release: async () => { try { await must(sb.rpc('set_hold', { p_id: id, p_hold: false, p_reason: '' })); toast('Hold released. The container is back in the queue at its FIFO place.', 'ok'); } catch (err) { toast(errMsg(err), 'bad'); } },
     att: () => { S.attFor = id; S.attBusy = ''; S.attDel = null; S.viewer = null; render(); loadThumbs(id); setTimeout(() => $('#att-close')?.focus({ preventScroll: true })); },
     'att-close': closeSheet, 'viewer-close': () => { S.viewer = null; render(); },
@@ -842,6 +844,7 @@ document.addEventListener('change', async e => {
 document.addEventListener('keydown', e => {
   if (!active()) return; const t = e.target;
   if (e.key === 'Escape' && S.attFor) { if (S.viewer) { S.viewer = null; render(); } else closeSheet(); return; }
+  if (e.key === 'Escape' && S.full && !t.matches?.('.grid input')) { S.full = false; document.body.classList.remove('inv-full'); render(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && S.tab === 'inv') { e.preventDefault(); saveGrid(); return; }
   if (!t.matches?.('.grid input')) return;
   const dir = (e.key === 'ArrowDown' || (e.key === 'Enter' && !e.shiftKey)) ? 1 : (e.key === 'ArrowUp' || (e.key === 'Enter' && e.shiftKey)) ? -1 : 0;
@@ -867,6 +870,6 @@ return {
     if (S && S.uid === profile.id && S.ch) { S.me = profile; render(); return; }
     fresh(profile); shell(); subscribe();
   },
-  stop() { if (S?.ch) sb.removeChannel(S.ch); S = null; },
+  stop() { if (S?.ch) sb.removeChannel(S.ch); document.body.classList.remove('inv-full'); S = null; },
 };
 })();

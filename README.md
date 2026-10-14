@@ -104,11 +104,12 @@ In the portal, open **Users & customers**.
    | Role | Can do |
    |---|---|
    | Superadmin | Everything, including FIFO bypass, priority, user management |
-   | Operations + Supervisor | Inventory, starting/completing jobs, Move to front, Hold / Release |
+   | Operations + Supervisor | Inventory, starting/completing jobs, Move to position, Hold / Release |
    | Operations team | Inventory only |
    | Warehouse supervisor | Start/complete jobs and photos |
    | Read only | View everything, change nothing |
    | Customer | Only their own containers on the customer portal |
+   | Display screen | The warehouse TV: live jobs, job queue and "check your container", with no customer names |
 
 6. **Inventory:** put the customer code in the **Customer** column of each container (or in the Excel upload). Only containers with that customer's code appear on their portal.
 7. **Photos:** tick **Customer can see** on any file you want to share. Files are private to staff until you tick it.
@@ -123,6 +124,14 @@ In the portal, open **Users & customers**.
 
 - **Hold:** a superadmin or Operations + Supervisor user can put a container that hasn't started on hold (reason required). It leaves the job queue and can't be started. **Release hold** puts it back at its normal FIFO place. The customer sees "On hold" but not the reason.
 - **Customer priority:** on the customer portal, **Set my priority** lets a customer order their own containers. Their containers keep the places they already hold in the overall queue; only which of their containers sits in which place changes. Other customers are never moved. A container staff moved to the front keeps its place.
+
+## Warehouse display screen
+
+Create a login with role **Display screen** (e.g. User ID `gate.screen`) and sign in with it on the TV or kiosk PC in the warehouse. It shows the live destuffing jobs (container, size, start time, running clock, Manual/Mechanical, dock) and the overall job queue, with no customer names. Visitors can type a full container number to see when it arrived and whether it is queued, being destuffed or done. Use **Full screen** (or F11) on the TV. Staff can preview it with the **Display screen** link at the top of the portal.
+
+## Move to position
+
+**Move to position** (superadmin or Operations + Supervisor) places a container just ahead of whatever is at that position now, with a reason. It then moves up normally as jobs finish, so it is never stuck at a fixed number. **Back to FIFO place** undoes it.
 
 ## How the security works
 

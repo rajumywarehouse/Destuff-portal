@@ -4,8 +4,20 @@ const CFG = window.CFS_CONFIG || {};
 const SLA_MIN = +CFG.SLA_MINUTES || 120;
 const MODES = { manual: 'Manual', mechanical: 'Mechanical', combined: 'Manual + Mechanical' };
 const ST = { awaiting: 'Awaiting arrival', queued: 'In queue', hold: 'On hold', in_progress: 'Destuffing', completed: 'Completed' };
-const ROLES = { superadmin: 'Superadmin', both: 'Operations + Supervisor', ops: 'Operations team', supervisor: 'Warehouse supervisor', readonly: 'Read only', customer: 'Customer', pending: 'Waiting for approval' };
+const ROLES = { superadmin: 'Superadmin', both: 'Operations + Supervisor', ops: 'Operations team', supervisor: 'Warehouse supervisor', readonly: 'Read only', customer: 'Customer', portal: 'Display screen', pending: 'Waiting for approval' };
 const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+/* ---------- light / dark theme (remembered on this device) ---------- */
+const THEMES = ['auto', 'light', 'dark'], THEME_LABEL = { auto: 'Theme: Auto', light: 'Theme: Light', dark: 'Theme: Dark' };
+function getTheme() { try { const t = localStorage.getItem('cfs-theme'); return THEMES.includes(t) ? t : 'auto'; } catch (e) { return 'auto'; } }
+function applyTheme(t) {
+  const r = document.documentElement;
+  if (t === 'auto') delete r.dataset.theme; else r.dataset.theme = t;
+  const dark = t === 'dark' || (t === 'auto' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#151f29' : '#1b4d78');
+}
+function themeBtn() { return `<button type="button" class="btn sm ghost" data-act="theme" title="Switch between automatic, light and dark">${THEME_LABEL[getTheme()]}</button>`; }
+applyTheme(getTheme());
 
 /* ---------- helpers ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -78,7 +90,7 @@ const lockIcon = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="t
 const clipIcon = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M8.5 3.5 4.3 7.7a1 1 0 0 0 1.4 1.4l4.5-4.5a2 2 0 0 0-2.8-2.8L2.8 6.3a3 3 0 0 0 4.2 4.2L10.5 7" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
 function meChip(p) {
   const n = p.full_name || p.email || 'You', ini = n.split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase();
-  return `<span class="me"><span class="av">${esc(ini)}</span><span class="nm" title="${esc(loginLabel(p))}">${esc(n)}</span></span><button class="btn sm ghost" data-act="chpass">Password</button><button class="btn sm" data-act="signout">Sign out</button>`;
+  return `<span class="me"><span class="av">${esc(ini)}</span><span class="nm" title="${esc(loginLabel(p))}">${esc(n)}</span></span>${themeBtn()}<button class="btn sm ghost" data-act="chpass">Password</button><button class="btn sm" data-act="signout">Sign out</button>`;
 }
 /* live clocks shared by both portals */
 function tick() {
@@ -111,7 +123,7 @@ function vAuth() {
   const body = APP.recovering
     ? `<form data-auth="newpass"><label>New password<input id="a-pass" name="password" type="password" minlength="8" autocomplete="new-password" required></label><button class="btn primary" type="submit">Set new password</button></form>`
     : `<form data-auth="in"><label>User ID<input id="a-user" name="user" autocomplete="username" autocapitalize="none" spellcheck="false" required></label><label>Password<input id="a-pass" name="password" type="password" autocomplete="current-password" required></label><button class="btn primary" type="submit">Sign in</button><p class="hint">Logins are created by the CFS team. Forgot your password? Ask your CFS superadmin to reset it.</p></form>`;
-  return `<div class="auth"><div class="auth-card">${brand}${msg ? `<div class="note ${msg.kind === 'ok' ? 'ok' : ''}">${esc(msg.text)}</div>` : ''}${body}</div></div>`;
+  return `<div class="auth"><div class="auth-card"><div style="justify-self:end">${themeBtn()}</div>${brand}${msg ? `<div class="note ${msg.kind === 'ok' ? 'ok' : ''}">${esc(msg.text)}</div>` : ''}${body}</div></div>`;
 }
 function vPending() {
   const p = APP.profile;
@@ -133,15 +145,17 @@ async function route() {
   APP.profile = await loadProfile();
   const role = APP.profile?.role || 'pending';
   if (role === 'pending' || (role === 'customer' && !APP.profile.customer_code)) { stopAll(); showFrame(vPending()); return; }
-  const mode = role === 'customer' ? 'customer' : 'staff';
+  const mode = role === 'customer' ? 'customer' : (role === 'portal' || location.hash === '#display') ? 'display' : 'staff';
   if (APP.mode !== mode) { stopAll(); APP.mode = mode; }
   document.body.dataset.view = mode;
-  if (mode === 'customer') CustomerApp.start(APP.profile); else StaffApp.start(APP.profile);
+  if (mode === 'customer') CustomerApp.start(APP.profile); else if (mode === 'display') DisplayApp.start(APP.profile); else StaffApp.start(APP.profile);
 }
-function stopAll() { APP.mode = null; try { StaffApp.stop(); } catch (e) {} try { CustomerApp.stop(); } catch (e) {} }
+function stopAll() { APP.mode = null; try { StaffApp.stop(); } catch (e) {} try { CustomerApp.stop(); } catch (e) {} try { DisplayApp.stop(); } catch (e) {} }
+window.addEventListener('hashchange', () => { if (APP.session && !APP.recovering) route(); });
 
 document.addEventListener('click', async e => {
-  const b = e.target.closest('[data-act="signout"],[data-act="recheck"],[data-act="chpass"],[data-act="chpass-close"]'); if (!b) return;
+  const b = e.target.closest('[data-act="signout"],[data-act="recheck"],[data-act="chpass"],[data-act="chpass-close"],[data-act="theme"]'); if (!b) return;
+  if (b.dataset.act === 'theme') { const t = THEMES[(THEMES.indexOf(getTheme()) + 1) % THEMES.length]; try { localStorage.setItem('cfs-theme', t); } catch (err) {} applyTheme(t); document.querySelectorAll('[data-act="theme"]').forEach(x => { x.textContent = THEME_LABEL[t]; }); return; }
   if (b.dataset.act === 'chpass') { openChpass(); return; }
   if (b.dataset.act === 'chpass-close') { closeChpass(); return; }
   if (b.dataset.act === 'signout') { await sb.auth.signOut(); return; }

@@ -5,7 +5,7 @@
    Optional: LOGIN_DOMAIN (default "cfs.local") — must match LOGIN_DOMAIN in assets/config.js. */
 'use strict';
 
-const ROLES = ['pending', 'superadmin', 'both', 'ops', 'supervisor', 'readonly', 'customer'];
+const ROLES = ['pending', 'superadmin', 'both', 'ops', 'supervisor', 'readonly', 'customer', 'portal'];
 const ID_RE = /^[a-z0-9][a-z0-9._-]{2,29}$/;
 
 function send(res, status, body) {
