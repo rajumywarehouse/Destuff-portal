@@ -320,3 +320,4 @@ tr.pending td{background:var(--warn-soft)}
 .kv dd{margin:0;overflow-wrap:anywhere}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .updated{font-size:12px;color:var(--muted)}
+.unsaved-banner{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:var(--r);background:var(--warn-soft);border:1px solid var(--warn);color:var(--ink);font-size:13px}

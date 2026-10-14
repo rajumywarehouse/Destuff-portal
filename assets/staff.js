@@ -176,7 +176,8 @@ function vHeader() {
 }
 function vTabs() {
   const q = fifo().length, rn = running().length, pend = [...S.profiles.values()].filter(p => p.role === 'pending').length;
-  const t = [['dash','Dashboard',rn ? `<span class="ct hot">${rn} live</span>` : ''],['inv','Inventory',''],['queue','Job queue',q ? `<span class="ct">${q}</span>` : ''],['done','Completed',''],['audit','Audit log','']];
+  const pc = pendingCount();
+  const t = [['dash','Dashboard',rn ? `<span class="ct hot">${rn} live</span>` : ''],['inv','Inventory',pc ? `<span class="ct hot">${pc} unsaved</span>` : ''],['queue','Job queue',q ? `<span class="ct">${q}</span>` : ''],['done','Completed',''],['audit','Audit log','']];
   if (can.admin()) t.push(['team','Users & customers', pend ? `<span class="ct hot">${pend} new</span>` : '']);
   return t.map(([k, l, c]) => `<button class="tab" data-tab="${k}" ${S.tab === k ? 'aria-current="page"' : ''}>${l}${c}</button>`).join('');
 }
@@ -360,10 +361,11 @@ function vInv() {
       <button class="btn" data-act="template">Download template</button><button class="btn" data-act="export-inv">Export this view</button>
       ${can.admin() ? (hasSample ? `<button class="btn ghost" data-act="sample-clear">Clear sample data</button>` : `<button class="btn ghost" data-act="sample-load">Load sample data</button>`) : ''}
     </div>
+    ${pc ? `<div class="unsaved-banner" role="status"><span><b>${pc} row${pc > 1 ? 's are' : ' is'} not saved yet.</b> Other users and devices will not see ${pc > 1 ? 'them' : 'it'} until you click Save changes.</span><button class="btn primary" data-act="save">Save changes</button></div>` : ''}
     ${vFilters(keys.filter(k => k[0] === 'c').length, pc)}
     ${can.inv() ? `<p class="hint">Type straight into the grid like a spreadsheet. Copy rows from Excel and paste into any cell with <kbd>Ctrl</kbd>+<kbd>V</kbd>. <kbd>Enter</kbd> moves down, <kbd>Ctrl</kbd>+<kbd>S</kbd> saves. Dates are read day-first (13-10-2026 14:30).</p>` : `<p class="hint">${lockIcon} Your role can view the inventory but not edit it.</p>`}
     ${keys.length ? `<div class="grid-wrap"><table class="grid"><thead>${head}</thead><tbody>${rows}</tbody></table></div>` : `<div class="empty"><b>No containers match this view.</b><span>Change the filters or search.</span></div>`}
-    ${pc ? `<div class="savebar" id="savebar"><span><b>${pc}</b> row${pc > 1 ? 's' : ''} with unsaved changes</span><div class="actions"><button class="btn ghost sm" data-act="discard">Discard</button><button class="btn primary" data-act="save">Save changes</button></div></div>` : ''}
+    ${pc ? `<div class="savebar" id="savebar"><span><b>${pc}</b> row${pc > 1 ? 's' : ''} not saved yet</span><div class="actions"><button class="btn ghost sm" data-act="discard">Discard</button><button class="btn primary" data-act="save">Save changes</button></div></div>` : ''}
   </section>`;
 }
 const sameSet = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
@@ -485,7 +487,7 @@ async function onUpload(file) {
       else { const key = newRow(); for (const [k, v] of Object.entries(o)) setEdit(key, k, v); nNew++; }
     }
     S.f.unsaved = true; render();
-    toast(`Loaded ${nNew} new and ${nUpd} updated containers. Review, then Save.` + (bad ? ` ${bad} dates could not be read.` : '') + (skipped ? ` ${skipped} locked values skipped.` : ''), bad ? 'bad' : 'ok');
+    toast(`Loaded ${nNew} new and ${nUpd} updated containers. NOT saved yet: check the yellow cells, then click Save changes.` + (bad ? ` ${bad} dates could not be read.` : '') + (skipped ? ` ${skipped} locked values skipped.` : ''), bad ? 'bad' : 'ok');
   } catch (e) { toast('Could not read that file: ' + (e.message || e), 'bad'); }
 }
 function downloadTemplate() {
