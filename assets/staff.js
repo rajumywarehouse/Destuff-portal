@@ -15,7 +15,9 @@ const COLS = [
   { k: 'cfsArrival', db: 'cfs_arrival', label: 'CFS Arrival Date & Time', short: 'CFS Arrival', w: 200, type: 'datetime-local' },
 ];
 const STORD = { in_progress: 0, queued: 1, awaiting: 2, completed: 3 };
-const ACTIVE_ST = () => new Set(['awaiting', 'queued', 'in_progress']);
+const ACTIVE_ST = () => new Set(['awaiting', 'queued', 'hold', 'in_progress']);
+const STORD_X = { in_progress: 0, queued: 1, hold: 2, awaiting: 3, completed: 4 };
+const dispStatus = c => c.onHold && (c.status === 'queued' || c.status === 'awaiting') ? 'hold' : c.status;
 const FFIELDS = [['status','Status'],['customer','Customer'],['liner','Liner'],['vessel','Vessel'],['consol','Consol'],['port','Port'],['size','Size'],['item','Item']];
 const ALIASES = [['pnrDate',/pnr/i],['igmNo',/igm/i],['cfsArrival',/arriv|gate.?in|cfs/i],['size',/size|type|teu/i],['customer',/customer|importer|client|\bcha\b/i],['containerNo',/container|cntr|ctr|box/i],['consol',/consol/i],['vessel',/vessel|ship|voy/i],['liner',/liner|line|carrier/i],['port',/port|pod/i],['item',/item|cargo|commodity|desc/i]];
 
@@ -33,7 +35,8 @@ function resetFilters() { S.f = { status: ACTIVE_ST(), customer: new Set(), line
 
 /* ---------- roles ---------- */
 function role() { return S.viewAs || S.me.role; }
-const can = { inv: () => ['superadmin','ops','both'].includes(role()), sup: () => ['superadmin','supervisor','both'].includes(role()), admin: () => role() === 'superadmin' };
+const can = { inv: () => ['superadmin','ops','both'].includes(role()), sup: () => ['superadmin','supervisor','both'].includes(role()), admin: () => role() === 'superadmin',
+  front: () => ['superadmin','both'].includes(role()), hold: () => ['superadmin','both'].includes(role()) };
 const canAttach = () => ['superadmin','both','ops','supervisor'].includes(role());
 const canDelAtt = a => canAttach() && (a.by === S.uid || can.admin() || can.inv());
 function who(uid) { if (!uid) return '—'; const p = S.profiles.get(uid); const n = p ? (p.full_name || p.username || p.email) : 'Team member'; return esc(uid === S.uid ? `${n} (you)` : n); }
@@ -44,22 +47,31 @@ function fromRow(r) {
     liner: r.liner || '', port: r.port || '', pnrDate: r.pnr_date || '', igmNo: r.igm_no || '', item: r.item || '', cfsArrival: localInput(r.cfs_arrival),
     status: r.status, mode: r.mode, bay: r.bay, crew: r.crew, startRemarks: r.start_remarks, startedAt: ms(r.started_at), startedBy: r.started_by,
     queuePos: r.queue_pos, bypass: r.bypass, completedAt: ms(r.completed_at), durationMs: r.duration_ms == null ? null : +r.duration_ms, completedBy: r.completed_by,
-    packages: r.packages, endRemarks: r.end_remarks, sample: r.sample, createdAt: ms(r.created_at), createdBy: r.created_by };
+    packages: r.packages, endRemarks: r.end_remarks, sample: r.sample, createdAt: ms(r.created_at), createdBy: r.created_by,
+    onHold: !!r.on_hold, holdReason: r.hold_reason || '', holdBy: r.hold_by, holdAt: ms(r.hold_at), customerRank: r.customer_rank };
 }
 function toDbVal(k, v) { if (k === 'cfsArrival') return v ? toISO(v) : null; if (k === 'pnrDate') return v || null; if (k === 'customer') return v || null; return v ?? ''; }
 const ovFrom = r => ({ id: r.container_id, at: ms(r.at), by: r.by, reason: r.reason });
 function attFrom(r) { const a = { ...r, cid: r.container_id, at: ms(r.at) }; if (r.thumb) S.thumbs[r.id] = r.thumb; delete a.thumb; return a; }
 const arrMs = c => ms(c.cfsArrival);
 
-/* ---------- FIFO (mirror of the server's order; the server enforces it) ---------- */
+/* ---------- FIFO (mirror of the server's fifo_queue(); the server enforces it) ----------
+   Base order: moved-to-front first, then CFS arrival. Held containers are out of the queue.
+   Customer sequence: each customer's containers keep their slots; only their order within those slots follows the customer's choice. */
 function fifo() {
-  return [...S.containers.values()].filter(c => c.status === 'queued').sort((a, b) => {
+  const base = [...S.containers.values()].filter(c => c.status === 'queued' && !c.onHold).sort((a, b) => {
     const pa = S.overrides.get(a.id), pb = S.overrides.get(b.id);
     if (!!pa !== !!pb) return pa ? -1 : 1;
     if (pa && pb && pa.at !== pb.at) return pa.at - pb.at;
     return (arrMs(a) || 0) - (arrMs(b) || 0) || (a.createdAt || 0) - (b.createdAt || 0) || a.containerNo.localeCompare(b.containerNo);
   });
+  const slots = new Map();
+  base.forEach((c, i) => { if (c.customer && !S.overrides.get(c.id)) { if (!slots.has(c.customer)) slots.set(c.customer, []); slots.get(c.customer).push(i); } });
+  const out = base.slice();
+  slots.forEach(pos => { const pref = pos.map(i => base[i]).sort((a, b) => (a.customerRank ?? 1e9) - (b.customerRank ?? 1e9)); pos.forEach((p, k) => { out[p] = pref[k]; }); });
+  return out;
 }
+const held = () => [...S.containers.values()].filter(c => dispStatus(c) === 'hold').sort((a, b) => (a.holdAt || 0) - (b.holdAt || 0));
 const running = () => [...S.containers.values()].filter(c => c.status === 'in_progress').sort((a, b) => a.startedAt - b.startedAt);
 
 /* ---------- data ---------- */
@@ -186,7 +198,7 @@ const custName = code => S.customers.get(code)?.name || code;
 
 /* --- dashboard --- */
 function vDash() {
-  const all = [...S.containers.values()], cnt = { awaiting: 0, queued: 0, in_progress: 0, completed: 0 }; all.forEach(c => cnt[c.status] != null && cnt[c.status]++);
+  const all = [...S.containers.values()], cnt = { awaiting: 0, queued: 0, hold: 0, in_progress: 0, completed: 0 }; all.forEach(c => cnt[dispStatus(c)] != null && cnt[dispStatus(c)]++);
   const t0 = dayStart(), today = all.filter(c => c.status === 'completed' && c.completedAt >= t0);
   const startedToday = all.filter(c => c.startedAt >= t0 && c.cfsArrival);
   const avgD = today.length ? today.reduce((s, c) => s + c.durationMs, 0) / today.length : null;
@@ -197,7 +209,7 @@ function vDash() {
   return `
   <section class="pipe" aria-label="Container flow">
     <button class="step s1" data-tab="inv" data-filter="awaiting"><span class="lbl">Awaiting arrival</span><b>${cnt.awaiting}</b><small>No CFS arrival time yet</small></button>
-    <button class="step s2" data-tab="queue"><span class="lbl">In job queue</span><b>${cnt.queued}</b><small>Head has waited ${headWait}</small></button>
+    <button class="step s2" data-tab="queue"><span class="lbl">In job queue</span><b>${cnt.queued}</b><small>Head has waited ${headWait}${cnt.hold ? ` · <b>${cnt.hold} on hold</b>` : ''}</small></button>
     <button class="step s3" data-tab="dash"><span class="lbl">Destuffing now</span><b>${cnt.in_progress}</b><small>Clock running</small></button>
     <button class="step s4" data-tab="done"><span class="lbl">Completed today</span><b>${today.length}</b><small>${cnt.completed} in the last 31 days</small></button>
   </section>
@@ -245,13 +257,14 @@ function qCard(c, i, full) {
   else if (head) acts += `<span class="lock">Next to start</span>`;
   else if (can.admin() && can.sup()) acts += `<button class="btn sm" data-act="open-bypass" data-id="${esc(c.id)}">Start out of turn</button>`;
   else acts += `<span class="lock">${lockIcon} Locked by FIFO · waits for position ${i}</span>`;
-  if (can.admin() && !head) acts += pr ? `<button class="btn ghost sm" data-act="unprio" data-id="${esc(c.id)}">Remove priority</button>` : `<button class="btn ghost sm" data-act="open-prio" data-id="${esc(c.id)}">Move to front</button>`;
-  else if (can.admin() && head && pr) acts += `<button class="btn ghost sm" data-act="unprio" data-id="${esc(c.id)}">Remove priority</button>`;
-  const form = open === 'start' ? startForm(c, false, i) : open === 'bypass' ? startForm(c, true, i) : open === 'prio' ? prioForm(c) : '';
+  if (can.front() && !head) acts += pr ? `<button class="btn ghost sm" data-act="unprio" data-id="${esc(c.id)}">Remove priority</button>` : `<button class="btn ghost sm" data-act="open-prio" data-id="${esc(c.id)}">Move to front</button>`;
+  else if (can.front() && head && pr) acts += `<button class="btn ghost sm" data-act="unprio" data-id="${esc(c.id)}">Remove priority</button>`;
+  if (can.hold()) acts += `<button class="btn ghost sm" data-act="open-hold" data-id="${esc(c.id)}">Hold</button>`;
+  const form = open === 'start' ? startForm(c, false, i) : open === 'bypass' ? startForm(c, true, i) : open === 'prio' ? prioForm(c) : open === 'hold' ? holdForm(c) : '';
   return `<article class="q ${head ? 'head' : ''} ${pr ? 'prio' : ''}">
     <div class="pos">${i + 1}<small>${head ? 'Next' : 'FIFO'}</small></div>
     <div class="q-main">
-      <div class="q-line"><span class="cno">${cnoHtml(c.containerNo)}</span><span class="pill st-mode">${esc(c.size || '—')}</span>${attBtn(c)}${pr ? `<span class="pill st-prio" title="${esc(pr.reason || '')}">Priority by superadmin</span>` : ''}</div>
+      <div class="q-line"><span class="cno">${cnoHtml(c.containerNo)}</span><span class="pill st-mode">${esc(c.size || '—')}</span>${attBtn(c)}${pr ? `<span class="pill st-prio" title="${esc(pr.reason || '')}">Moved to front</span>` : ''}${c.customerRank != null && !pr ? `<span class="pill st-new" title="The customer chose the order of their own containers (their choice #${c.customerRank}). Other customers are not affected.">Customer sequence</span>` : ''}</div>
       <div class="q-sub"><span>Arrived <b>${fmtT(c.cfsArrival)}</b></span><span>Waiting <b>${a ? `<span data-since="${a}">${dur(Date.now() - a)}</span>` : '—'}</b></span>${c.customer ? `<span>${esc(custName(c.customer))}</span>` : ''}${full ? `<span>${esc(c.liner || '—')} · ${esc(c.vessel || '—')}</span><span>${esc(c.item || '—')} · ${esc(c.consol || '')}</span><span>IGM ${esc(c.igmNo || '—')}</span>` : `<span>${esc(c.item || '')}</span>`}</div>
       ${pr && full ? `<div class="note info">Moved to front: ${esc(pr.reason || 'no reason given')} — ${who(pr.by)}, ${fmtT(pr.at)}</div>` : ''}
       ${form || `<div class="actions">${acts}</div>`}
@@ -285,13 +298,28 @@ function prioForm(c) {
     <div class="actions"><button type="submit" class="btn primary">Move to front</button><button type="button" class="btn ghost" data-act="cancel">Cancel</button></div></form>`;
 }
 
+function holdForm(c) {
+  return `<form class="jobform" data-form="hold" data-id="${esc(c.id)}"><div class="note">The container leaves the job queue until the hold is released. It then goes back to its normal FIFO place. The customer sees "On hold" (not the reason).</div>
+    <label>Reason for the hold (required)<textarea id="f-reason" name="reason" required placeholder="e.g. Duty not paid, customs hold, documents pending">${fv('reason')}</textarea></label>
+    <div class="actions"><button type="submit" class="btn danger">Put on hold</button><button type="button" class="btn ghost" data-act="cancel">Cancel</button></div></form>`;
+}
+function heldCard(c) {
+  return `<article class="q prio"><div class="pos">—<small>Hold</small></div><div class="q-main">
+    <div class="q-line"><span class="cno">${cnoHtml(c.containerNo)}</span><span class="pill st-mode">${esc(c.size || '—')}</span>${pill('hold')}${attBtn(c)}${c.status === 'awaiting' ? '<span class="pill st-awaiting">Not arrived</span>' : ''}</div>
+    <div class="q-sub">${c.customer ? `<span>${esc(custName(c.customer))}</span>` : ''}<span>Arrived <b>${fmtT(c.cfsArrival)}</b></span><span>${esc(c.item || '')}</span></div>
+    <div class="note">On hold: ${esc(c.holdReason || '—')} — ${who(c.holdBy)}, ${fmtT(c.holdAt)}</div>
+    ${can.hold() ? `<div class="actions"><button class="btn sm" data-act="release" data-id="${esc(c.id)}">Release hold</button></div>` : ''}
+  </div></article>`;
+}
+
 /* --- queue tab --- */
 function vQueue() {
   const q = fifo();
-  return `<section class="panel"><div class="sec-head"><div><h2>Destuffing job queue</h2><p>Strict FIFO by CFS arrival date and time. Supervisors can start only position 1. Starting out of turn or moving a container to the front needs a superadmin, and every bypass is logged.</p></div>
+  return `<section class="panel"><div class="sec-head"><div><h2>Destuffing job queue</h2><p>Strict FIFO by CFS arrival date and time. Supervisors can start only position 1. A customer may re-order only their own containers within their own places in the queue. Move to front and Hold need a superadmin or Operations + Supervisor; starting out of turn needs a superadmin. Every change is logged.</p></div>
     <span class="chip">${q.length} waiting · ${running().length} running</span></div>
     ${q.length ? `<div class="qlist">${q.map((c, i) => qCard(c, i, true)).join('')}</div>` : `<div class="empty"><b>No containers are waiting.</b><span>Enter a CFS arrival date and time in Inventory to put a container in the queue.</span><button class="btn" data-tab="inv">Go to inventory</button></div>`}
-  </section>`;
+  </section>
+  ${held().length ? `<section class="panel"><div class="sec-head"><div><h2>On hold</h2><p>Held containers are out of the queue and cannot be started. Releasing a hold puts the container back at its FIFO place.</p></div><span class="chip">${held().length} on hold</span></div><div class="qlist">${held().map(heldCard).join('')}</div></section>` : ''}`;
 }
 
 /* --- inventory grid --- */
@@ -321,7 +349,7 @@ function cellLocked(key, k) {
 function canDelete(key) { if (key[0] === 'n') return !rowBlank(key); const c = S.containers.get(key.slice(2)); if (!c) return false; if (c.status === 'awaiting') return can.inv(); if (c.status === 'queued') return can.admin(); return false; }
 function statusCell(key, counts) {
   const c = key[0] === 'c' ? S.containers.get(key.slice(2)) : null, iss = rowIssues(key, counts);
-  let h = c ? pill(c.status) : (iss.blank ? '<span class="muted">New row</span>' : '<span class="pill st-new">New</span>');
+  let h = c ? pill(dispStatus(c)) : (iss.blank ? '<span class="muted">New row</span>' : '<span class="pill st-new">New</span>');
   if (iss.errs.length) h += `<span class="iss bad" title="${esc(iss.errs.join('; '))}">${esc(iss.errs[0])}</span>`;
   else if (iss.warns.length) h += `<span class="iss warn" title="${esc(iss.warns.join('; '))}">${esc(iss.warns[0])}</span>`;
   return h;
@@ -331,13 +359,13 @@ function gridRows() {
   let list = [...S.containers.values()].filter(c => {
     const key = 'c:' + c.id;
     if (f.unsaved) return !!S.edits[key];
-    for (const [k] of FFIELDS) if (f[k].size && !f[k].has(k === 'status' ? c.status : (c[k] || ''))) return false;
+    for (const [k] of FFIELDS) if (f[k].size && !f[k].has(k === 'status' ? dispStatus(c) : (c[k] || ''))) return false;
     if (f.arrFrom || f.arrTo) { const d = (c.cfsArrival || '').slice(0, 10); if (!d || (f.arrFrom && d < f.arrFrom) || (f.arrTo && d > f.arrTo)) return false; }
     if (f.pnrFrom || f.pnrTo) { const d = (c.pnrDate || '').slice(0, 10); if (!d || (f.pnrFrom && d < f.pnrFrom) || (f.pnrTo && d > f.pnrTo)) return false; }
     if (f.files) { const n = S.attCount.get(c.id) || 0; if (f.files === 'with' ? !n : n) return false; }
     if (q && ![c.containerNo, c.vessel, c.consol, c.igmNo, c.item, c.liner, c.port, c.customer, custName(c.customer)].some(x => String(x || '').toLowerCase().includes(q))) return false;
     return true; });
-  list.sort((a, b) => (STORD[a.status] - STORD[b.status]) || (a.cfsArrival || '9').localeCompare(b.cfsArrival || '9') || (a.createdAt || 0) - (b.createdAt || 0));
+  list.sort((a, b) => (STORD_X[dispStatus(a)] - STORD_X[dispStatus(b)]) || (a.cfsArrival || '9').localeCompare(b.cfsArrival || '9') || (a.createdAt || 0) - (b.createdAt || 0));
   return [...list.map(c => 'c:' + c.id), ...(can.inv() ? S.newRows : [])];
 }
 function pendingCount() { return Object.keys(S.edits).filter(k => !(k[0] === 'n' && rowBlank(k))).length; }
@@ -372,7 +400,7 @@ const sameSet = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
 function fCount() { const f = S.f; let n = 0; for (const [k] of FFIELDS) if (k === 'status' ? !sameSet(f.status, ACTIVE_ST()) : f[k].size) n++; if (f.arrFrom || f.arrTo) n++; if (f.pnrFrom || f.pnrTo) n++; if (f.files) n++; if (f.unsaved) n++; return n; }
 function optsFor(k) {
   const m = new Map();
-  if (k === 'status') { S.containers.forEach(c => m.set(c.status, (m.get(c.status) || 0) + 1)); return Object.keys(ST).map(v => [v, ST[v], m.get(v) || 0]); }
+  if (k === 'status') { S.containers.forEach(c => m.set(dispStatus(c), (m.get(dispStatus(c)) || 0) + 1)); return ['awaiting','queued','hold','in_progress','completed'].map(v => [v, ST[v], m.get(v) || 0]); }
   S.containers.forEach(c => { const v = c[k]; if (v) m.set(v, (m.get(v) || 0) + 1); });
   return [...m].sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([v, n]) => [v, k === 'customer' ? `${v} · ${custName(v)}` : v, n]);
 }
@@ -505,7 +533,7 @@ function exportInv() {
   const rows = S.gridKeys.filter(k => k[0] === 'c').map(k => S.containers.get(k.slice(2))).filter(Boolean);
   if (!rows.length) return toast('No containers in this view to export.', 'bad');
   const aoa = [[...COLS.map(c => c.label), 'Customer Name', 'Status', 'Queue position', 'Mode', 'Started', 'Completed', 'Duration (min)', 'Attachments']];
-  rows.forEach(c => aoa.push([...COLS.map(col => col.k === 'cfsArrival' ? (c.cfsArrival ? fmtDT(c.cfsArrival) : '') : col.k === 'pnrDate' ? (c.pnrDate ? fmtD(c.pnrDate) : '') : c[col.k] || ''), c.customer ? custName(c.customer) : '', ST[c.status] || c.status, c.status === 'queued' ? q.findIndex(x => x.id === c.id) + 1 : '', MODES[c.mode] || '', c.startedAt ? fmtDT(c.startedAt) : '', c.completedAt ? fmtDT(c.completedAt) : '', c.durationMs ? Math.round(c.durationMs / 6e4) : '', S.attCount.get(c.id) || 0]));
+  rows.forEach(c => aoa.push([...COLS.map(col => col.k === 'cfsArrival' ? (c.cfsArrival ? fmtDT(c.cfsArrival) : '') : col.k === 'pnrDate' ? (c.pnrDate ? fmtD(c.pnrDate) : '') : c[col.k] || ''), c.customer ? custName(c.customer) : '', ST[dispStatus(c)] || c.status, dispStatus(c) === 'queued' ? q.findIndex(x => x.id === c.id) + 1 : '', MODES[c.mode] || '', c.startedAt ? fmtDT(c.startedAt) : '', c.completedAt ? fmtDT(c.completedAt) : '', c.durationMs ? Math.round(c.durationMs / 6e4) : '', S.attCount.get(c.id) || 0]));
   const wb = XLSX.utils.book_new(), ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = aoa[0].map(() => ({ wch: 18 })); XLSX.utils.book_append_sheet(wb, ws, 'Inventory');
   const d = new Date(); saveWorkbook(`CFS_Inventory_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}.xlsx`, wb);
 }
@@ -718,6 +746,7 @@ document.addEventListener('click', e => {
     del: () => { S.confirmDel = b.dataset.key; render(); }, 'del-no': () => { S.confirmDel = null; render(); }, 'del-yes': () => deleteRow(b.dataset.key),
     template: downloadTemplate, 'export-inv': exportInv, 'export-done': exportDone, 'sample-load': loadSample, 'sample-clear': clearSample,
     'run-all': () => { S.runAll = !S.runAll; render(); },
+    release: async () => { try { await must(sb.rpc('set_hold', { p_id: id, p_hold: false, p_reason: '' })); toast('Hold released. The container is back in the queue at its FIFO place.', 'ok'); } catch (err) { toast(errMsg(err), 'bad'); } },
     att: () => { S.attFor = id; S.attBusy = ''; S.attDel = null; S.viewer = null; render(); loadThumbs(id); setTimeout(() => $('#att-close')?.focus({ preventScroll: true })); },
     'att-close': closeSheet, 'viewer-close': () => { S.viewer = null; render(); },
     'att-view': () => viewAtt(aid),
@@ -762,7 +791,8 @@ document.addEventListener('submit', async e => {
       const row = await must(sb.from('customers').insert({ code, name: fd.name.trim() }).select().single()); S.customers.set(row.code, row);
       await log('Customer added', null, `${code} · ${fd.name.trim()}`); toast(`Added customer ${code}.`, 'ok');
     } else {
-      const fn = { start: () => startJob(id, f.dataset.bypass === '1', fd), done: () => completeJob(id, fd), requeue: () => requeueJob(id, fd), prio: () => prioritise(id, fd) }[f.dataset.form];
+      const fn = { start: () => startJob(id, f.dataset.bypass === '1', fd), done: () => completeJob(id, fd), requeue: () => requeueJob(id, fd), prio: () => prioritise(id, fd),
+        hold: async () => { await must(sb.rpc('set_hold', { p_id: id, p_hold: true, p_reason: fd.reason || '' })); S.open = null; S.form = {}; toast('Container put on hold.', 'ok'); } }[f.dataset.form];
       if (fn) await fn();
     }
   } catch (err) { toast(err.code === '23505' ? 'That customer code already exists.' : errMsg(err), 'bad'); }

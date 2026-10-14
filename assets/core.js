@@ -3,7 +3,7 @@
 const CFG = window.CFS_CONFIG || {};
 const SLA_MIN = +CFG.SLA_MINUTES || 120;
 const MODES = { manual: 'Manual', mechanical: 'Mechanical', combined: 'Manual + Mechanical' };
-const ST = { awaiting: 'Awaiting arrival', queued: 'In queue', in_progress: 'Destuffing', completed: 'Completed' };
+const ST = { awaiting: 'Awaiting arrival', queued: 'In queue', hold: 'On hold', in_progress: 'Destuffing', completed: 'Completed' };
 const ROLES = { superadmin: 'Superadmin', both: 'Operations + Supervisor', ops: 'Operations team', supervisor: 'Warehouse supervisor', readonly: 'Read only', customer: 'Customer', pending: 'Waiting for approval' };
 const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 

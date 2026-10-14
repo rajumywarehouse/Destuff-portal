@@ -64,6 +64,12 @@ create unique index if not exists containers_active_no on containers(container_n
 create index if not exists containers_status on containers(status);
 create index if not exists containers_customer on containers(customer_code);
 create index if not exists containers_completed_at on containers(completed_at);
+-- Hold (container stays in inventory but leaves the job queue) and the customer's own sequence
+alter table containers add column if not exists on_hold       boolean not null default false;
+alter table containers add column if not exists hold_reason   text;
+alter table containers add column if not exists hold_by       uuid references auth.users(id) on delete set null;
+alter table containers add column if not exists hold_at       timestamptz;
+alter table containers add column if not exists customer_rank int;
 
 create table if not exists overrides (
   container_id uuid primary key references containers(id) on delete cascade,
@@ -139,7 +145,10 @@ create trigger on_auth_user_created after insert on auth.users
 create or replace function containers_guard() returns trigger
 language plpgsql set search_path = public as $$
 begin
-  if current_user not in ('authenticated','anon') then return new; end if;  -- trusted functions / dashboard
+  if current_user not in ('authenticated','anon') then          -- trusted functions / Supabase dashboard
+    if new.status in ('awaiting','queued') then new.status := case when new.cfs_arrival is null then 'awaiting' else 'queued' end; end if;
+    return new;
+  end if;
 
   if tg_op = 'INSERT' then
     new.created_by := auth.uid();
@@ -151,6 +160,7 @@ begin
     new.started_at := null; new.started_by := null; new.queue_pos := null; new.bypass := null;
     new.completed_at := null; new.duration_ms := null; new.completed_by := null;
     new.packages := null; new.end_remarks := null;
+    new.on_hold := false; new.hold_reason := null; new.hold_by := null; new.hold_at := null; new.customer_rank := null;
     new.status := case when new.cfs_arrival is null then 'awaiting' else 'queued' end;
     return new;
   end if;
@@ -161,12 +171,14 @@ begin
   end if;
   if (new.mode, new.bay, new.crew, new.start_remarks, new.started_at, new.started_by, new.queue_pos,
       new.bypass, new.completed_at, new.duration_ms, new.completed_by, new.packages, new.end_remarks,
-      new.sample, new.created_at, new.created_by)
+      new.sample, new.created_at, new.created_by,
+      new.on_hold, new.hold_reason, new.hold_by, new.hold_at, new.customer_rank)
      is distinct from
      (old.mode, old.bay, old.crew, old.start_remarks, old.started_at, old.started_by, old.queue_pos,
       old.bypass, old.completed_at, old.duration_ms, old.completed_by, old.packages, old.end_remarks,
-      old.sample, old.created_at, old.created_by) then
-    raise exception 'Job details can only change through Start / Complete';
+      old.sample, old.created_at, old.created_by,
+      old.on_hold, old.hold_reason, old.hold_by, old.hold_at, old.customer_rank) then
+    raise exception 'Job details, holds and customer sequence can only change through their own buttons';
   end if;
   if old.cfs_arrival is not null and new.cfs_arrival is distinct from old.cfs_arrival and not is_admin() then
     raise exception 'Only a superadmin can change a saved CFS arrival time (it sets the FIFO position)';
@@ -180,14 +192,30 @@ create trigger containers_guard before insert or update on containers
   for each row execute function containers_guard();
 
 -- ---------- FIFO order (single source of truth) ----------
+-- 1. Base order: staff "move to front" first, then CFS arrival time (strict FIFO). Held containers are left out.
+-- 2. Customer sequence: each customer's containers keep the SAME positions (slots) in the overall queue;
+--    only which of their own containers sits in which slot follows the customer's chosen order.
+--    Containers moved to the front by staff keep their slot. Other customers are never affected.
 create or replace function fifo_queue()
 returns table (container_id uuid, pos int, total int)
 language sql stable security definer set search_path = public as $$
-  select c.id,
-         (row_number() over (order by (o.container_id is null), o.at, c.cfs_arrival, c.created_at, c.container_no))::int,
+  with base as (
+    select c.id, c.customer_code, c.customer_rank, (o.container_id is not null) as pri,
+           row_number() over (order by (o.container_id is null), o.at, c.cfs_arrival, c.created_at, c.container_no) as bpos
+    from containers c left join overrides o on o.container_id = c.id
+    where c.status = 'queued' and not c.on_hold
+  ), grp as (
+    select id, customer_code, bpos,
+           row_number() over (partition by customer_code order by bpos) as slot_i,
+           row_number() over (partition by customer_code order by customer_rank nulls last, bpos) as pref_i
+    from base where customer_code is not null and not pri
+  ), moved as (
+    select a.id, b.bpos as newpos from grp a join grp b on a.customer_code = b.customer_code and a.pref_i = b.slot_i
+  )
+  select base.id,
+         (row_number() over (order by coalesce(m.newpos, base.bpos)))::int,
          (count(*) over ())::int
-  from containers c left join overrides o on o.container_id = c.id
-  where c.status = 'queued'
+  from base left join moved m on m.id = base.id
 $$;
 revoke execute on function fifo_queue() from public, anon;
 
@@ -202,6 +230,7 @@ begin
   perform pg_advisory_xact_lock(7311001);              -- one start at a time, so two supervisors can't race
   select * into v_c from containers where id = p_id for update;
   if not found or v_c.status <> 'queued' then raise exception 'This container is no longer in the queue.'; end if;
+  if v_c.on_hold then raise exception 'This container is on hold. Release the hold first.'; end if;
   select q.pos into v_pos from fifo_queue() q where q.container_id = p_id;
   if v_pos > 1 then
     if v_role <> 'superadmin' then raise exception 'FIFO is locked. Only a superadmin can start a container out of turn.'; end if;
@@ -253,15 +282,54 @@ begin
           'Clock discarded after ' || round(extract(epoch from now() - v_c.started_at) / 60) || ' min · ' || trim(p_reason));
 end $$;
 
+-- ---------- Hold / release (superadmin and Operations + Supervisor) ----------
+create or replace function set_hold(p_id uuid, p_hold boolean, p_reason text default '')
+returns void language plpgsql security definer set search_path = public as $$
+declare v_c containers;
+begin
+  if my_role() not in ('superadmin','both') then raise exception 'Only a superadmin or an Operations + Supervisor user can hold containers.'; end if;
+  select * into v_c from containers where id = p_id for update;
+  if not found then raise exception 'Container not found.'; end if;
+  if v_c.status not in ('awaiting','queued') then raise exception 'Only containers that have not started destuffing can be held.'; end if;
+  if p_hold then
+    if coalesce(trim(p_reason), '') = '' then raise exception 'Enter the reason for the hold.'; end if;
+    update containers set on_hold = true, hold_reason = trim(p_reason), hold_by = auth.uid(), hold_at = now() where id = p_id;
+    delete from overrides where container_id = p_id;
+    insert into audit (by, action, container_no, container_id, detail) values (auth.uid(), 'Put on hold', v_c.container_no, p_id, trim(p_reason));
+  else
+    update containers set on_hold = false, hold_reason = null, hold_by = null, hold_at = null where id = p_id;
+    insert into audit (by, action, container_no, container_id, detail) values (auth.uid(), 'Hold released', v_c.container_no, p_id, 'Back to its FIFO position');
+  end if;
+end $$;
+
+-- ---------- Customer's own sequence (only re-orders that customer's containers) ----------
+create or replace function customer_set_sequence(p_ids uuid[])
+returns void language plpgsql security definer set search_path = public as $$
+declare v_cust text := my_customer(); v_bad int;
+begin
+  if v_cust is null then raise exception 'Only customer logins can set a container sequence.'; end if;
+  p_ids := coalesce(p_ids, '{}');
+  if (select count(distinct x) from unnest(p_ids) x) <> cardinality(p_ids) then raise exception 'A container appears twice in the sequence.'; end if;
+  select count(*) into v_bad from unnest(p_ids) x left join containers c on c.id = x
+   where c.id is null or c.customer_code is distinct from v_cust or c.status not in ('awaiting','queued');
+  if v_bad > 0 then raise exception 'Some containers can no longer be re-ordered (already started, or not yours). Refresh and try again.'; end if;
+  update containers set customer_rank = null where customer_code = v_cust and status in ('awaiting','queued') and customer_rank is not null;
+  update containers c set customer_rank = t.ord::int from unnest(p_ids) with ordinality t(id, ord) where c.id = t.id;
+  insert into audit (by, action, detail)
+  values (auth.uid(), case when cardinality(p_ids) = 0 then 'Customer sequence reset' else 'Customer sequence changed' end,
+          v_cust || ': ' || coalesce((select string_agg(c.container_no, ' → ' order by t.ord) from unnest(p_ids) with ordinality t(id, ord) join containers c on c.id = t.id), 'back to arrival order'));
+end $$;
+
 -- ---------- Customer read access (only their own containers, limited columns) ----------
+drop function if exists customer_containers(int);
 create or replace function customer_containers(p_days int default 60)
 returns table (id uuid, container_no text, size text, consol text, vessel text, liner text, port text,
                pnr_date date, igm_no text, item text, cfs_arrival timestamptz, status text,
-               queue_position int, queue_total int, mode text, started_at timestamptz,
+               queue_position int, queue_total int, on_hold boolean, my_rank int, mode text, started_at timestamptz,
                completed_at timestamptz, duration_ms bigint, packages int, files int)
 language sql stable security definer set search_path = public as $$
   select c.id, c.container_no, c.size, c.consol, c.vessel, c.liner, c.port, c.pnr_date, c.igm_no, c.item,
-         c.cfs_arrival, c.status, q.pos, q.total, c.mode, c.started_at, c.completed_at, c.duration_ms, c.packages,
+         c.cfs_arrival, c.status, q.pos, q.total, c.on_hold, c.customer_rank, c.mode, c.started_at, c.completed_at, c.duration_ms, c.packages,
          (select count(*)::int from attachments a where a.container_id = c.id and a.customer_visible)
   from containers c
   left join fifo_queue() q on q.container_id = c.id
@@ -320,7 +388,7 @@ create policy containers_delete on containers for delete to authenticated using 
 drop policy if exists overrides_read  on overrides;
 drop policy if exists overrides_write on overrides;
 create policy overrides_read  on overrides for select to authenticated using (is_staff());
-create policy overrides_write on overrides for all    to authenticated using (is_admin()) with check (is_admin());
+create policy overrides_write on overrides for all    to authenticated using (my_role() in ('superadmin','both')) with check (my_role() in ('superadmin','both'));
 
 drop policy if exists audit_read   on audit;
 drop policy if exists audit_insert on audit;
@@ -340,6 +408,8 @@ create policy attachments_delete on attachments for delete to authenticated usin
 revoke insert, delete on profiles from authenticated, anon;
 
 -- Functions callable by signed-in users only
+revoke execute on function set_hold(uuid, boolean, text), customer_set_sequence(uuid[]) from public, anon;
+grant execute on function set_hold(uuid, boolean, text), customer_set_sequence(uuid[]) to authenticated;
 revoke execute on function start_job(uuid, text, text, int, text, text), complete_job(uuid, int, text),
   requeue_job(uuid, text), customer_containers(int), customer_attachments(uuid), customer_can_read_object(text)
   from public, anon;

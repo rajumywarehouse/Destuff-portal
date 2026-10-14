@@ -104,7 +104,7 @@ In the portal, open **Users & customers**.
    | Role | Can do |
    |---|---|
    | Superadmin | Everything, including FIFO bypass, priority, user management |
-   | Operations + Supervisor | Inventory and starting/completing jobs |
+   | Operations + Supervisor | Inventory, starting/completing jobs, Move to front, Hold / Release |
    | Operations team | Inventory only |
    | Warehouse supervisor | Start/complete jobs and photos |
    | Read only | View everything, change nothing |
@@ -118,6 +118,11 @@ In the portal, open **Users & customers**.
 - No emails are needed: logins are created in the portal, so Supabase's email limits don't apply.
 - **Free plan pauses after 7 days of no activity.** Daily use keeps it awake. Upgrade to the Pro plan ($25/month) for production use and daily backups.
 - **Storage:** the free plan includes 1 GB for photos and files. Photos are resized to about 200–400 KB each.
+
+## Holds and customer priority
+
+- **Hold:** a superadmin or Operations + Supervisor user can put a container that hasn't started on hold (reason required). It leaves the job queue and can't be started. **Release hold** puts it back at its normal FIFO place. The customer sees "On hold" but not the reason.
+- **Customer priority:** on the customer portal, **Set my priority** lets a customer order their own containers. Their containers keep the places they already hold in the overall queue; only which of their containers sits in which place changes. Other customers are never moved. A container staff moved to the front keeps its place.
 
 ## How the security works
 
