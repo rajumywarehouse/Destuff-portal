@@ -372,3 +372,13 @@ body.inv-full{overflow:hidden}
 .disp-queue li.next{border-color:var(--queued);box-shadow:inset 4px 0 0 var(--queued)}
 .disp-pos{font-family:var(--f-display);font-weight:700;font-size:clamp(20px,1.8vw,26px);min-width:2ch;text-align:right;color:var(--muted)}
 .disp-queue li.next .disp-pos{color:var(--queued)}
+
+/* ---------- bulk select + after-destuffing grid ---------- */
+.grid th.selc,.grid td.selc{width:34px;min-width:34px;text-align:center;padding:0}
+.grid td.selc input,.grid th.selc input{width:16px;height:16px;cursor:pointer}
+.grid tr.selected td{background:var(--primary-soft)}
+.grid tr.selected td input{background:transparent}
+.grid td.ro{background:var(--surface-2)}
+.grid td.ro .rocell{display:block;padding:0 8px;white-space:nowrap;font-size:13px}
+.grid td.ro.mono .rocell{font-family:var(--f-mono);letter-spacing:.02em}
+.grid td.expired input{color:var(--bad);font-weight:600;background:var(--bad-soft)}

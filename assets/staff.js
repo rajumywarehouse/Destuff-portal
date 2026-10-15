@@ -12,14 +12,23 @@ const COLS = [
   { k: 'pnrDate', db: 'pnr_date', label: 'PNR Date', short: 'PNR Date', w: 140, type: 'date' },
   { k: 'igmNo', db: 'igm_no', label: 'IGM No.', short: 'IGM No.', w: 110, mono: true },
   { k: 'item', db: 'item', label: 'Item', short: 'Item', w: 170 },
-  { k: 'cfsArrival', db: 'cfs_arrival', label: 'CFS Arrival Date & Time', short: 'CFS Arrival', w: 200, type: 'datetime-local' },
+  { k: 'cfsArrival', db: 'cfs_arrival', label: 'CFS Gate-In Date & Time', short: 'CFS Gate-In', w: 200, type: 'datetime-local' },
+  { k: 'doReceived', db: 'do_received', label: 'DO Received Date', short: 'DO Received', w: 140, type: 'date', post: true },
+  { k: 'doValidity', db: 'do_validity', label: 'DO Validity Date', short: 'DO Validity', w: 140, type: 'date', post: true },
+  { k: 'storagePoint', db: 'storage_point', label: 'Storage Point', short: 'Storage Point', w: 130, post: true },
+  { k: 'gateOut', db: 'gate_out', label: 'CFS Gate-Out Date & Time', short: 'CFS Gate-Out', w: 200, type: 'datetime-local', post: true },
 ];
+const POST_KEYS = new Set(COLS.filter(c => c.post).map(c => c.k));
+/* After-destuffing page: read-only basics + the four delivery fields */
+const PCOLS = [...['containerNo','size','consol','vessel','liner','igmNo','item'].map(k => ({ ...COLS.find(c => c.k === k), ro: true })),
+  { k: 'completedAt', label: 'Destuffing Completed', short: 'Destuffed On', w: 150, ro: true, pseudo: true },
+  ...COLS.filter(c => c.post)];
 const STORD = { in_progress: 0, queued: 1, awaiting: 2, completed: 3 };
 const ACTIVE_ST = () => new Set(['awaiting', 'queued', 'hold', 'in_progress']);
 const STORD_X = { in_progress: 0, queued: 1, hold: 2, awaiting: 3, completed: 4 };
 const dispStatus = c => c.onHold && (c.status === 'queued' || c.status === 'awaiting') ? 'hold' : c.status;
 const FFIELDS = [['status','Status'],['customer','Customer'],['liner','Liner'],['vessel','Vessel'],['consol','Consol'],['port','Port'],['size','Size'],['item','Item']];
-const ALIASES = [['pnrDate',/pnr/i],['igmNo',/igm/i],['cfsArrival',/arriv|gate.?in|cfs/i],['size',/size|type|teu/i],['customer',/customer|importer|client|\bcha\b/i],['containerNo',/container|cntr|ctr|box/i],['consol',/consol/i],['vessel',/vessel|ship|voy/i],['liner',/liner|line|carrier/i],['port',/port|pod/i],['item',/item|cargo|commodity|desc/i]];
+const ALIASES = [['gateOut',/gate.?out|out.?date|empty.?out/i],['doValidity',/valid/i],['doReceived',/\bd\.?o\b.*rec|received/i],['storagePoint',/storage|stack|rack|yard.?loc/i],['pnrDate',/pnr/i],['igmNo',/igm/i],['cfsArrival',/arriv|gate.?in|cfs/i],['size',/size|type|teu/i],['customer',/customer|importer|client|\bcha\b/i],['containerNo',/container|cntr|ctr|box/i],['consol',/consol/i],['vessel',/vessel|ship|voy/i],['liner',/liner|line|carrier/i],['port',/port|pod/i],['item',/item|cargo|commodity|desc/i]];
 
 let S;
 function fresh(profile) {
@@ -28,7 +37,7 @@ function fresh(profile) {
     atts: new Map(), attCount: new Map(), thumbs: {}, doneAll: null,
     tab: 'dash', edits: {}, newRows: [], nseq: 0, q: '', confirmDel: null, open: null, form: {},
     doneRange: 'today', busy: false, gridKeys: [], runAll: false, f: null, dd: null, ddq: '',
-    attFor: null, attBusy: '', attDel: null, viewer: null };
+    attFor: null, attBusy: '', attDel: null, viewer: null, sel: new Set(), bulkDel: false, pq: '', pf: 'pending' };
   resetFilters();
 }
 function resetFilters() { S.f = { status: ACTIVE_ST(), customer: new Set(), liner: new Set(), vessel: new Set(), consol: new Set(), port: new Set(), size: new Set(), item: new Set(), arrFrom: '', arrTo: '', pnrFrom: '', pnrTo: '', files: '', unsaved: false }; S.dd = null; S.ddq = ''; }
@@ -48,9 +57,10 @@ function fromRow(r) {
     status: r.status, mode: r.mode, bay: r.bay, crew: r.crew, startRemarks: r.start_remarks, startedAt: ms(r.started_at), startedBy: r.started_by,
     queuePos: r.queue_pos, bypass: r.bypass, completedAt: ms(r.completed_at), durationMs: r.duration_ms == null ? null : +r.duration_ms, completedBy: r.completed_by,
     packages: r.packages, endRemarks: r.end_remarks, sample: r.sample, createdAt: ms(r.created_at), createdBy: r.created_by,
+    doReceived: r.do_received || '', doValidity: r.do_validity || '', storagePoint: r.storage_point || '', gateOut: localInput(r.gate_out),
     onHold: !!r.on_hold, holdReason: r.hold_reason || '', holdBy: r.hold_by, holdAt: ms(r.hold_at), customerRank: r.customer_rank, seq: r.seq == null ? 0 : +r.seq };
 }
-function toDbVal(k, v) { if (k === 'cfsArrival') return v ? toISO(v) : null; if (k === 'pnrDate') return v || null; if (k === 'customer') return v || null; return v ?? ''; }
+function toDbVal(k, v) { if (k === 'cfsArrival' || k === 'gateOut') return v ? toISO(v) : null; if (k === 'pnrDate' || k === 'doReceived' || k === 'doValidity') return v || null; if (k === 'customer') return v || null; return v ?? ''; }
 const ovFrom = r => ({ id: r.container_id, at: ms(r.at), by: r.by, reason: r.reason, sortKey: r.sort_key ? ms(r.sort_key) : Date.UTC(2000, 0, 1), sortSub: r.sort_sub == null ? 0 : +r.sort_sub, targetPos: r.target_pos });
 function attFrom(r) { const a = { ...r, cid: r.container_id, at: ms(r.at) }; if (r.thumb) S.thumbs[r.id] = r.thumb; delete a.thumb; return a; }
 const arrMs = c => ms(c.cfsArrival);
@@ -82,7 +92,7 @@ async function loadAll() {
     const since = new Date(Date.now() - 31 * 864e5).toISOString();
     const [act, done, ov, pr, cu, au, at] = await Promise.all([
       fetchAll(() => sb.from('containers').select('*').neq('status', 'completed').order('created_at')),
-      fetchAll(() => sb.from('containers').select('*').eq('status', 'completed').gte('completed_at', since).order('completed_at')),
+      fetchAll(() => sb.from('containers').select('*').eq('status', 'completed').or(`completed_at.gte.${since},gate_out.is.null`).order('completed_at')),
       must(sb.from('overrides').select('*')),
       must(sb.from('profiles').select('*')),
       must(sb.from('customers').select('*').order('code')),
@@ -173,7 +183,7 @@ function render() {
   $('#hdr-right').innerHTML = vHeader(); $('#tabs').innerHTML = vTabs();
   $('#custlist').innerHTML = [...S.customers.values()].map(c => `<option value="${esc(c.code)}">${esc(c.name)}</option>`).join('');
   if (!S.loaded) return;
-  const v = { dash: vDash, inv: vInv, queue: vQueue, done: vDone, audit: vAudit, team: vTeam }[S.tab] || vDash;
+  const v = { dash: vDash, inv: vInv, queue: vQueue, post: vPost, done: vDone, audit: vAudit, team: vTeam }[S.tab] || vDash;
   $('#main').innerHTML = v();
   $('#sheet').innerHTML = vSheet(); document.body.style.overflow = S.attFor ? 'hidden' : '';
   const ngw = $('.grid-wrap'); if (ngw && gs) { ngw.scrollLeft = gs[0]; ngw.scrollTop = gs[1]; }
@@ -190,7 +200,7 @@ function vHeader() {
 function vTabs() {
   const q = fifo().length, rn = running().length, pend = [...S.profiles.values()].filter(p => p.role === 'pending').length;
   const pc = pendingCount();
-  const t = [['dash','Dashboard',rn ? `<span class="ct hot">${rn} live</span>` : ''],['inv','Inventory',pc ? `<span class="ct hot">${pc} unsaved</span>` : ''],['queue','Job queue',q ? `<span class="ct">${q}</span>` : ''],['done','Completed',''],['audit','Audit log','']];
+  const t = [['dash','Dashboard',rn ? `<span class="ct hot">${rn} live</span>` : ''],['inv','Inventory',pc ? `<span class="ct hot">${pc} unsaved</span>` : ''],['queue','Job queue',q ? `<span class="ct">${q}</span>` : ''],['post','After destuffing',(() => { const n = [...S.containers.values()].filter(c => c.status === 'completed' && !c.gateOut).length; return n ? `<span class="ct">${n}</span>` : ''; })()],['done','Completed',''],['audit','Audit log','']];
   if (can.admin()) t.push(['team','Users & customers', pend ? `<span class="ct hot">${pend} new</span>` : '']);
   return t.map(([k, l, c]) => `<button class="tab" data-tab="${k}" ${S.tab === k ? 'aria-current="page"' : ''}>${l}${c}</button>`).join('');
 }
@@ -343,11 +353,13 @@ function rowIssues(key, counts) {
 function cellLocked(key, k) {
   if (!can.inv()) return 'role'; if (key[0] === 'n') return false;
   const c = S.containers.get(key.slice(2)); if (!c) return 'gone';
+  if (POST_KEYS.has(k)) return false;
+  if (!COLS.some(x => x.k === k)) return 'ro';
   if (c.status === 'in_progress' || c.status === 'completed') return 'job';
   if (k === 'cfsArrival' && c.cfsArrival && !can.admin()) return 'arr';
   return false;
 }
-function canDelete(key) { if (key[0] === 'n') return !rowBlank(key); const c = S.containers.get(key.slice(2)); if (!c) return false; if (c.status === 'awaiting') return can.inv(); if (c.status === 'queued') return can.admin(); return false; }
+function canDelete(key) { if (key[0] === 'n') return !rowBlank(key); const c = S.containers.get(key.slice(2)); if (!c) return false; if (can.admin()) return true; return c.status === 'awaiting' && can.inv(); }
 function statusCell(key, counts) {
   const c = key[0] === 'c' ? S.containers.get(key.slice(2)) : null, iss = rowIssues(key, counts);
   let h = c ? pill(dispStatus(c)) : (iss.blank ? '<span class="muted">New row</span>' : '<span class="pill st-new">New</span>');
@@ -379,11 +391,13 @@ function vInv() {
       return `<td class="c-${col.k}${col.mono ? ' mono' : ''}${dirty ? ' dirty' : ''}" ${title ? `title="${esc(title)}"` : ''}><input id="${cellId(key, col.k)}" data-key="${esc(key)}" data-col="${col.k}" type="${col.type || 'text'}" value="${esc(v[col.k])}" ${col.list ? `list="${col.list}"` : ''} ${lock ? 'disabled' : ''} aria-label="${esc(col.label)}, row ${i + 1}" autocomplete="off" spellcheck="false" style="min-width:${col.w}px"></td>`; });
     cells.splice(1, 0, `<td class="stc" id="st-${cellId(key, 's')}">${statusCell(key, counts)}</td>`);
     const act = (c ? attBtn(c) + ' ' : '') + (S.confirmDel === key ? `<button class="btn sm danger" data-act="del-yes" data-key="${esc(key)}">Delete</button> <button class="btn sm ghost" data-act="del-no">Keep</button>` : canDelete(key) ? `<button class="x" data-act="del" data-key="${esc(key)}" aria-label="Delete row ${i + 1}" title="Delete row">×</button>` : '');
-    return `<tr data-row="${esc(key)}" class="${iss.errs.length ? 'err' : ''}"><td class="rn">${i + 1}</td>${cells.join('')}<td class="act">${act}</td></tr>`;
+    const selCell = can.admin() ? `<td class="selc">${c ? `<input type="checkbox" id="sel-${esc(c.id)}" data-sel="${esc(c.id)}" ${S.sel.has(c.id) ? 'checked' : ''} aria-label="Select ${esc(c.containerNo)}">` : ''}</td>` : '';
+    return `<tr data-row="${esc(key)}" class="${iss.errs.length ? 'err' : ''} ${c && S.sel.has(c.id) ? 'selected' : ''}"><td class="rn">${i + 1}</td>${selCell}${cells.join('')}<td class="act">${act}</td></tr>`;
   }).join('');
-  const head = `<tr><th class="rn">#</th>${COLS.map((c, i) => `<th class="c-${c.k}">${c.short}</th>${i === 0 ? '<th>Status</th>' : ''}`).join('')}<th>Files</th></tr>`;
+  const viewIds = keys.filter(k => k[0] === 'c').map(k => k.slice(2)), allSel = viewIds.length && viewIds.every(id => S.sel.has(id));
+  const head = `<tr><th class="rn">#</th>${can.admin() ? `<th class="selc"><input type="checkbox" id="sel-all" data-sel-all="1" ${allSel ? 'checked' : ''} aria-label="Select all ${viewIds.length} containers in this view"></th>` : ''}${COLS.map((c, i) => `<th class="c-${c.k}">${c.short}</th>${i === 0 ? '<th>Status</th>' : ''}`).join('')}<th>Files</th></tr>`;
   return `<section class="panel inv-panel ${S.full ? 'full' : ''}">
-    <div class="sec-head"><div><h2>Container inventory</h2><p>A container joins the destuffing queue as soon as its CFS arrival date and time is filled in. Blank arrival means it has not reached the CFS yet. The customer code decides which customer sees the container on their portal.</p></div></div>
+    <div class="sec-head"><div><h2>Container inventory</h2><p>A container joins the destuffing queue as soon as its CFS gate-in date and time is filled in. Blank gate-in means it has not reached the CFS yet. The customer code decides which customer sees the container on their portal.</p></div></div>
     <div class="toolbar">
       <div class="grow"><input type="search" id="inv-q" placeholder="Search container, customer, vessel, consol, IGM, item…" value="${esc(S.q)}" aria-label="Search inventory"></div>
       ${can.inv() ? `<button class="btn" data-act="add-rows">+ 5 rows</button><label class="btn file-btn">Upload Excel / CSV<input type="file" id="inv-file" accept=".xlsx,.xls,.csv"></label>` : ''}
@@ -392,6 +406,7 @@ function vInv() {
     </div>
     ${pc ? `<div class="unsaved-banner" role="status"><span><b>${pc} row${pc > 1 ? 's are' : ' is'} not saved yet.</b> Other users and devices will not see ${pc > 1 ? 'them' : 'it'} until you click Save changes.</span><button class="btn primary" data-act="save">Save changes</button></div>` : ''}
     ${vFilters(keys.filter(k => k[0] === 'c').length, pc)}
+    ${vBulkBar()}
     ${can.inv() ? `<p class="hint">Type straight into the grid like a spreadsheet. Copy rows from Excel and paste into any cell with <kbd>Ctrl</kbd>+<kbd>V</kbd>. <kbd>Enter</kbd> moves down, <kbd>Ctrl</kbd>+<kbd>S</kbd> saves. Dates are read day-first (13-10-2026 14:30).</p>` : `<p class="hint">${lockIcon} Your role can view the inventory but not edit it.</p>`}
     ${keys.length ? `<div class="grid-wrap"><table class="grid"><thead>${head}</thead><tbody>${rows}</tbody></table></div>` : `<div class="empty"><b>No containers match this view.</b><span>Change the filters or search.</span></div>`}
     ${pc ? `<div class="savebar" id="savebar"><span><b>${pc}</b> row${pc > 1 ? 's' : ''} not saved yet</span><div class="actions"><button class="btn ghost sm" data-act="discard">Discard</button><button class="btn primary" data-act="save">Save changes</button></div></div>` : ''}
@@ -442,8 +457,8 @@ function normalize(k, v) {
   if (k === 'containerNo') return String(v).toUpperCase().replace(/[\s-]/g, '');
   if (k === 'customer') return String(v).toUpperCase().trim();
   if (k === 'size') { const s = String(v).toUpperCase().replace(/['’"\s]|FT|FEET/g, ''); return /^40(HC|HQ|H)$/.test(s) ? '40HC' : s; }
-  if (k === 'cfsArrival') return parseDT(v);
-  if (k === 'pnrDate') { const r = parseDT(v); return r ? r.slice(0, 10) : r; }
+  if (k === 'cfsArrival' || k === 'gateOut') return parseDT(v);
+  if (k === 'pnrDate' || k === 'doReceived' || k === 'doValidity') { const r = parseDT(v); return r ? r.slice(0, 10) : r; }
   return String(v).trim();
 }
 async function saveGrid() {
@@ -477,6 +492,25 @@ async function saveGrid() {
   else { toast(`Saved: ${added} added, ${updated} updated.`, 'ok'); S.f.unsaved = false; }
   S.busy = false; render();
 }
+function vBulkBar() {
+  if (!can.admin() || !S.sel.size) return '';
+  const n = S.sel.size, running = [...S.sel].filter(id => S.containers.get(id)?.status === 'in_progress').length;
+  return S.bulkDel
+    ? `<div class="note" role="alert" style="display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;justify-content:space-between"><span><b>Permanently delete ${n} container${n > 1 ? 's' : ''}?</b> Their photos and files are deleted too.${running ? ` ${running} ${running > 1 ? 'are' : 'is'} being destuffed right now.` : ''} This cannot be undone.</span><span class="actions"><button class="btn danger" data-act="bulk-del-yes">Yes, delete ${n}</button><button class="btn ghost" data-act="bulk-del-no">Cancel</button></span></div>`
+    : `<div class="factive"><span><b>${n}</b> selected</span><button class="btn sm danger" data-act="bulk-del">Delete selected</button><button class="btn sm ghost" data-act="sel-clear">Clear selection</button></div>`;
+}
+async function bulkDelete() {
+  const ids = [...S.sel].filter(id => S.containers.has(id)); S.bulkDel = false; if (!ids.length) { S.sel.clear(); render(); return; }
+  S.busy = true; render(); let done = 0;
+  try {
+    const paths = [...S.atts.values()].filter(a => ids.includes(a.cid)).map(a => a.path);
+    for (let i = 0; i < paths.length; i += 100) await sb.storage.from('attachments').remove(paths.slice(i, i + 100));
+    for (let i = 0; i < ids.length; i += 100) { const chunk = ids.slice(i, i + 100); await must(sb.from('containers').delete().in('id', chunk)); chunk.forEach(id => { S.containers.delete(id); delete S.edits['c:' + id]; }); done += chunk.length; }
+    await log('Containers deleted', null, `${done} container${done > 1 ? 's' : ''}`);
+    toast(`Deleted ${done} container${done > 1 ? 's' : ''}.`, 'ok');
+  } catch (e) { toast(`Deleted ${done}. Stopped: ${errMsg(e)}`, 'bad'); }
+  S.sel.clear(); S.busy = false; refreshQueue(); render();
+}
 async function deleteRow(key) {
   S.confirmDel = null;
   if (key[0] === 'n') { delete S.edits[key]; S.newRows = S.newRows.filter(k => k !== key); render(); return; }
@@ -488,10 +522,10 @@ async function deleteRow(key) {
   } catch (e) { toast(errMsg(e), 'bad'); }
 }
 function applyPaste(startKey, startCol, matrix) {
-  const keys = S.gridKeys, ci = COLS.findIndex(c => c.k === startCol); let ri = keys.indexOf(startKey), skipped = 0, bad = 0;
+  const cols = S.tab === 'post' ? PCOLS : COLS, keys = S.gridKeys, ci = cols.findIndex(c => c.k === startCol); let ri = keys.indexOf(startKey), skipped = 0, bad = 0;
   matrix.forEach((cells, i) => {
-    let key = keys[ri + i]; if (!key) { key = newRow(); keys.push(key); }
-    cells.forEach((raw, j) => { const col = COLS[ci + j]; if (!col) return; if (cellLocked(key, col.k)) { skipped++; return; }
+    let key = keys[ri + i]; if (!key) { if (S.tab === 'post') return; key = newRow(); keys.push(key); }
+    cells.forEach((raw, j) => { const col = cols[ci + j]; if (!col) return; if (col.ro || cellLocked(key, col.k)) { skipped++; return; }
       let v = normalize(col.k, raw); if (v === null) { bad++; v = ''; } setEdit(key, col.k, v); });
   });
   render();
@@ -506,37 +540,116 @@ async function onUpload(file) {
     if (hi < 0) { toast('No header row with "Container No." found. Use the template.', 'bad'); return; }
     const map = {}, used = new Set(); rows[hi].forEach((h, i) => { const a = ALIASES.find(([k, re]) => !used.has(k) && re.test(String(h))); if (a) { map[i] = a[0]; used.add(a[0]); } });
     S.newRows = S.newRows.filter(k => !rowBlank(k));
-    const byNo = new Map([...S.containers.values()].filter(c => c.status !== 'completed').map(c => [c.containerNo, c]));
-    let nNew = 0, nUpd = 0, bad = 0, skipped = 0;
+    // one record per container number: an active one first, else the latest destuffed one not yet gated out
+    const byNo = new Map();
+    for (const c of S.containers.values()) {
+      if (c.status === 'completed' && c.gateOut) continue;
+      const cur = byNo.get(c.containerNo);
+      if (!cur || (cur.status === 'completed' && c.status !== 'completed') || (cur.status === 'completed' && c.status === 'completed' && (c.completedAt || 0) > (cur.completedAt || 0))) byNo.set(c.containerNo, c);
+    }
+    const fileKeys = new Map(); let nNew = 0, nUpd = 0, bad = 0, skipped = 0, dupes = 0; const arrLocked = [];
     for (const r of rows.slice(hi + 1)) {
       const o = {}; for (const [i, k] of Object.entries(map)) { let v = normalize(k, r[i]); if (v === null) { bad++; v = ''; } o[k] = v; }
       if (!Object.values(o).some(Boolean)) continue;
+      if (o.containerNo && fileKeys.has(o.containerNo)) dupes++;
       const ex = o.containerNo && byNo.get(o.containerNo);
-      if (ex) { const key = 'c:' + ex.id; let any = false; for (const [k, v] of Object.entries(o)) { if (!v || v === (ex[k] || '')) continue; if (cellLocked(key, k)) { skipped++; continue; } setEdit(key, k, v); any = true; } if (any) nUpd++; }
-      else { const key = newRow(); for (const [k, v] of Object.entries(o)) setEdit(key, k, v); nNew++; }
+      if (ex) {
+        const key = 'c:' + ex.id; let any = false;
+        for (const [k, v] of Object.entries(o)) { if (!v || v === (ex[k] || '')) continue; const lock = cellLocked(key, k);
+          if (lock) { skipped++; if (lock === 'arr' && !arrLocked.includes(ex.containerNo)) arrLocked.push(ex.containerNo); continue; } setEdit(key, k, v); any = true; }
+        if (any && !fileKeys.has(o.containerNo)) nUpd++;
+        if (o.containerNo) fileKeys.set(o.containerNo, key);
+      } else {
+        let key = o.containerNo && fileKeys.get(o.containerNo);
+        if (!key) { key = newRow(); nNew++; if (o.containerNo) fileKeys.set(o.containerNo, key); }
+        for (const [k, v] of Object.entries(o)) if (v) setEdit(key, k, v);
+      }
     }
-    S.f.unsaved = true; render();
-    toast(`Loaded ${nNew} new and ${nUpd} updated containers. NOT saved yet: check the yellow cells, then click Save changes.` + (bad ? ` ${bad} dates could not be read.` : '') + (skipped ? ` ${skipped} locked values skipped.` : ''), bad ? 'bad' : 'ok');
+    S.f.unsaved = true; if (S.tab !== 'post') S.tab = 'inv'; render();
+    toast(`Loaded ${nNew} new and ${nUpd} existing containers (matched by container number). NOT saved yet: check the yellow cells, then click Save changes.`
+      + (dupes ? ` ${dupes} repeated container number${dupes > 1 ? 's were' : ' was'} merged.` : '') + (bad ? ` ${bad} dates could not be read.` : '')
+      + (arrLocked.length ? ` Gate-in already saved for ${arrLocked.length} container${arrLocked.length > 1 ? 's' : ''} (${arrLocked.slice(0, 3).join(', ')}${arrLocked.length > 3 ? '…' : ''}); only a superadmin can change it.` : '')
+      + (skipped - arrLocked.length > 0 ? ` ${skipped - arrLocked.length} values on started containers were skipped.` : ''), bad || arrLocked.length ? 'bad' : 'ok');
   } catch (e) { toast('Could not read that file: ' + (e.message || e), 'bad'); }
 }
 function downloadTemplate() {
   if (!window.XLSX) return saveWorkbook();
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([COLS.map(c => c.label), ['MSCU1234566','40HC','CUST01','Globelink','MSC ARIANE V.FX241W','MSC','INMAA','12-10-2026','2345678','Auto components','13-10-2026 14:30'], ['MAEU7654320','20','CUST02','Shipco Transport','MAERSK KENSINGTON V.442E','Maersk','INKAT','12-10-2026','2345679','Readymade garments','']]);
+  const ws = XLSX.utils.aoa_to_sheet([COLS.map(c => c.label), ['MSCU1234566','40HC','CUST01','Globelink','MSC ARIANE V.FX241W','MSC','INMAA','12-10-2026','2345678','Auto components','13-10-2026 14:30','','','',''], ['MAEU7654320','20','CUST02','Shipco Transport','MAERSK KENSINGTON V.442E','Maersk','INKAT','12-10-2026','2345679','Readymade garments','','','','','']]);
   ws['!cols'] = COLS.map(c => ({ wch: Math.max(12, Math.round(c.w / 7)) })); XLSX.utils.book_append_sheet(wb, ws, 'Inventory');
   const codes = [...S.customers.values()].map(c => [c.code, c.name]);
-  const ins = XLSX.utils.aoa_to_sheet([['How to fill this template'], [''], ['1. Keep the header row as it is. One container per row; delete the two example rows.'], ['2. Container No.: 4 letters + 7 digits (ISO 6346), e.g. MSCU1234566.'], ['3. Container Size: 20, 40, 40HC or 45.'], ['4. Customer Code: must match a code in the portal (list below). It decides which customer sees the container.'], ['5. Dates are day-first: 13-10-2026 or 13/10/2026. CFS arrival takes a time too: 13-10-2026 14:30.'], ['6. Leave CFS Arrival blank if the container has not reached the CFS. Filled in = it joins the destuffing queue (FIFO by this time).'], ['7. Uploading a container number that already exists updates that container instead of adding a duplicate.'], ['8. After upload, review the highlighted cells in the portal and click Save changes.'], [''], ['Customer codes'], ...codes]);
+  const ins = XLSX.utils.aoa_to_sheet([['How to fill this template'], [''], ['1. Keep the header row as it is. One container per row; delete the two example rows.'], ['2. Container No.: 4 letters + 7 digits (ISO 6346), e.g. MSCU1234566.'], ['3. Container Size: 20, 40, 40HC or 45.'], ['4. Customer Code: must match a code in the portal (list below). It decides which customer sees the container.'], ['5. Dates are day-first: 13-10-2026 or 13/10/2026. CFS Gate-In and Gate-Out take a time too: 13-10-2026 14:30.'], ['6. Leave CFS Gate-In blank if the container has not reached the CFS. Filled in = it joins the destuffing queue (FIFO by this time).'], ['7. Each container number is kept once: uploading a number that already exists updates that container (e.g. fills in its Gate-In date, DO dates, storage point or Gate-Out) instead of adding a duplicate. A gate-in date that is already saved can only be changed by a superadmin.'], ['   DO Received, DO Validity, Storage Point and CFS Gate-Out can also be filled in after destuffing.'], ['8. After upload, review the highlighted cells in the portal and click Save changes.'], [''], ['Customer codes'], ...codes]);
   ins['!cols'] = [{ wch: 110 }, { wch: 40 }]; XLSX.utils.book_append_sheet(wb, ins, 'Instructions');
   saveWorkbook('CFS_Inventory_Template.xlsx', wb);
+}
+function xlVal(c, k) {
+  if (k === 'cfsArrival' || k === 'gateOut') return c[k] ? fmtDT(c[k]) : '';
+  if (k === 'pnrDate' || k === 'doReceived' || k === 'doValidity') return c[k] ? fmtD(c[k]) : '';
+  if (k === 'completedAt') return c.completedAt ? fmtDT(c.completedAt) : '';
+  return c[k] || '';
 }
 function exportInv() {
   if (!window.XLSX) return saveWorkbook(); const q = fifo();
   const rows = S.gridKeys.filter(k => k[0] === 'c').map(k => S.containers.get(k.slice(2))).filter(Boolean);
   if (!rows.length) return toast('No containers in this view to export.', 'bad');
   const aoa = [[...COLS.map(c => c.label), 'Customer Name', 'Status', 'Queue position', 'Mode', 'Started', 'Completed', 'Duration (min)', 'Attachments']];
-  rows.forEach(c => aoa.push([...COLS.map(col => col.k === 'cfsArrival' ? (c.cfsArrival ? fmtDT(c.cfsArrival) : '') : col.k === 'pnrDate' ? (c.pnrDate ? fmtD(c.pnrDate) : '') : c[col.k] || ''), c.customer ? custName(c.customer) : '', ST[dispStatus(c)] || c.status, dispStatus(c) === 'queued' ? q.findIndex(x => x.id === c.id) + 1 : '', MODES[c.mode] || '', c.startedAt ? fmtDT(c.startedAt) : '', c.completedAt ? fmtDT(c.completedAt) : '', c.durationMs ? Math.round(c.durationMs / 6e4) : '', S.attCount.get(c.id) || 0]));
+  rows.forEach(c => aoa.push([...COLS.map(col => xlVal(c, col.k)), c.customer ? custName(c.customer) : '', ST[dispStatus(c)] || c.status, dispStatus(c) === 'queued' ? q.findIndex(x => x.id === c.id) + 1 : '', MODES[c.mode] || '', c.startedAt ? fmtDT(c.startedAt) : '', c.completedAt ? fmtDT(c.completedAt) : '', c.durationMs ? Math.round(c.durationMs / 6e4) : '', S.attCount.get(c.id) || 0]));
   const wb = XLSX.utils.book_new(), ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = aoa[0].map(() => ({ wch: 18 })); XLSX.utils.book_append_sheet(wb, ws, 'Inventory');
   const d = new Date(); saveWorkbook(`CFS_Inventory_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}.xlsx`, wb);
+}
+
+/* --- after destuffing: DO, storage and empty-container gate-out --- */
+const todayStr = () => localInput(Date.now()).slice(0, 10);
+function postState(c) { if (c.gateOut) return 'out'; if (!c.doReceived) return 'nodo'; if (c.doValidity && c.doValidity < todayStr()) return 'expired'; return 'ready'; }
+const POST_LBL = { pending: 'Waiting for gate-out', nodo: 'No DO yet', expired: 'DO expired', ready: 'DO received', out: 'Gated out (last 31 days)', all: 'All' };
+function postRows() {
+  const q = S.pq.trim().toLowerCase(), f = S.pf;
+  return [...S.containers.values()].filter(c => c.status === 'completed').filter(c => {
+    const st = postState(c);
+    if (f === 'pending' && st === 'out') return false;
+    if (f !== 'pending' && f !== 'all' && st !== f) return false;
+    if (q && ![c.containerNo, c.vessel, c.consol, c.igmNo, c.item, c.liner, c.customer, custName(c.customer), c.storagePoint].some(x => String(x || '').toLowerCase().includes(q))) return false;
+    return true;
+  }).sort((a, b) => (a.completedAt || 0) - (b.completedAt || 0)).map(c => 'c:' + c.id);
+}
+function vPost() {
+  const keys = postRows(); S.gridKeys = keys; const pc = pendingCount(), all = [...S.containers.values()].filter(c => c.status === 'completed');
+  const cnt = { pending: 0, nodo: 0, expired: 0, ready: 0, out: 0, all: all.length }; all.forEach(c => { const st = postState(c); cnt[st]++; if (st !== 'out') cnt.pending++; });
+  const editable = can.inv();
+  const rows = keys.map((key, i) => {
+    const c = S.containers.get(key.slice(2)), v = rowVals(key), st = postState(c);
+    const cells = PCOLS.map(col => {
+      if (col.ro) return `<td class="ro c-${col.k}${col.mono ? ' mono' : ''}"><span class="rocell" style="min-width:${col.w}px">${col.k === 'containerNo' ? cnoHtml(c.containerNo) : esc(xlVal(c, col.k)) || '—'}</span></td>`;
+      const dirty = S.edits[key] && S.edits[key][col.k] !== undefined, expired = col.k === 'doValidity' && st === 'expired';
+      return `<td class="c-${col.k}${dirty ? ' dirty' : ''}${expired ? ' expired' : ''}" ${expired ? 'title="DO validity has passed"' : ''}><input id="${cellId(key, col.k)}" data-key="${esc(key)}" data-col="${col.k}" type="${col.type || 'text'}" value="${esc(v[col.k])}" ${editable ? '' : 'disabled'} aria-label="${esc(col.label)}, ${esc(c.containerNo)}" autocomplete="off" spellcheck="false" style="min-width:${col.w}px"></td>`;
+    }).join('');
+    const pillHtml = { nodo: '<span class="pill st-awaiting">No DO</span>', expired: '<span class="pill st-hold">DO expired</span>', ready: '<span class="pill st-queued">DO received</span>', out: '<span class="pill st-completed">Gated out</span>' }[st];
+    return `<tr data-row="${esc(key)}"><td class="rn">${i + 1}</td>${cells}<td class="stc">${pillHtml}</td><td class="act">${attBtn(c)}</td></tr>`;
+  }).join('');
+  const head = `<tr><th class="rn">#</th>${PCOLS.map(c => `<th class="c-${c.k}">${c.short}</th>`).join('')}<th>Status</th><th>Files</th></tr>`;
+  return `<section class="panel inv-panel ${S.full ? 'full' : ''}">
+    <div class="sec-head"><div><h2>After destuffing</h2><p>Every container appears here automatically as soon as destuffing is completed, and stays until the empty container is gated out. Fill in the DO dates, storage point and gate-out date here or by Excel upload (matched by container number).</p></div></div>
+    <div class="toolbar">
+      <div class="grow"><input type="search" id="post-q" placeholder="Search container, customer, vessel, consol, IGM, item, storage point…" value="${esc(S.pq)}" aria-label="Search after-destuffing list"></div>
+      ${editable ? `<label class="btn file-btn">Upload Excel / CSV<input type="file" id="post-file" accept=".xlsx,.xls,.csv"></label>` : ''}
+      <button class="btn" data-act="export-post">Export this view</button><button class="btn" data-act="full" aria-pressed="${!!S.full}">${S.full ? 'Exit full screen' : 'Full screen'}</button>
+    </div>
+    <div class="filters" role="group" aria-label="Show">${['pending','nodo','expired','ready','out','all'].map(k => `<button type="button" class="fbtn ${S.pf === k ? 'on' : ''}" data-act="pf" data-k="${k}" aria-pressed="${S.pf === k}">${POST_LBL[k]} <b>${cnt[k]}</b></button>`).join('')}</div>
+    ${pc ? `<div class="unsaved-banner" role="status"><span><b>${pc} row${pc > 1 ? 's are' : ' is'} not saved yet.</b> Other users and devices will not see the changes until you click Save changes.</span><button class="btn primary" data-act="save">Save changes</button></div>` : ''}
+    ${editable ? `<p class="hint">Type straight into the DO, storage and gate-out columns, or paste from Excel. <kbd>Ctrl</kbd>+<kbd>S</kbd> saves. Dates are day-first.</p>` : `<p class="hint">${lockIcon} Your role can view this page but not edit it.</p>`}
+    ${keys.length ? `<div class="grid-wrap"><table class="grid"><thead>${head}</thead><tbody>${rows}</tbody></table></div>` : `<div class="empty"><b>No containers in this view.</b><span>Containers appear here when destuffing is completed.</span></div>`}
+    ${pc ? `<div class="savebar" id="savebar"><span><b>${pc}</b> row${pc > 1 ? 's' : ''} not saved yet</span><div class="actions"><button class="btn ghost sm" data-act="discard">Discard</button><button class="btn primary" data-act="save">Save changes</button></div></div>` : ''}
+  </section>`;
+}
+function exportPost() {
+  if (!window.XLSX) return saveWorkbook();
+  const rows = S.gridKeys.map(k => S.containers.get(k.slice(2))).filter(Boolean);
+  if (!rows.length) return toast('No containers in this view to export.', 'bad');
+  const aoa = [['Container No.', 'Customer', ...PCOLS.slice(1).map(c => c.label), 'Status']];
+  const lbl = { nodo: 'No DO yet', expired: 'DO expired', ready: 'DO received', out: 'Gated out' };
+  rows.forEach(c => aoa.push([c.containerNo, c.customer ? custName(c.customer) : '', ...PCOLS.slice(1).map(col => xlVal(c, col.k)), lbl[postState(c)]]));
+  const wb = XLSX.utils.book_new(), ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = aoa[0].map(() => ({ wch: 18 })); XLSX.utils.book_append_sheet(wb, ws, 'After destuffing');
+  const d = new Date(); saveWorkbook(`CFS_After_Destuffing_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}.xlsx`, wb);
 }
 
 /* --- completed --- */
@@ -747,6 +860,9 @@ document.addEventListener('click', e => {
     del: () => { S.confirmDel = b.dataset.key; render(); }, 'del-no': () => { S.confirmDel = null; render(); }, 'del-yes': () => deleteRow(b.dataset.key),
     template: downloadTemplate, 'export-inv': exportInv, 'export-done': exportDone, 'sample-load': loadSample, 'sample-clear': clearSample,
     'run-all': () => { S.runAll = !S.runAll; render(); },
+    'bulk-del': () => { S.bulkDel = true; render(); }, 'bulk-del-no': () => { S.bulkDel = false; render(); }, 'bulk-del-yes': bulkDelete,
+    'sel-clear': () => { S.sel.clear(); S.bulkDel = false; render(); },
+    pf: () => { S.pf = k; render(); }, 'export-post': exportPost,
     full: () => { S.full = !S.full; document.body.classList.toggle('inv-full', S.full); render(); },
     release: async () => { try { await must(sb.rpc('set_hold', { p_id: id, p_hold: false, p_reason: '' })); toast('Hold released. The container is back in the queue at its FIFO place.', 'ok'); } catch (err) { toast(errMsg(err), 'bad'); } },
     att: () => { S.attFor = id; S.attBusy = ''; S.attDel = null; S.viewer = null; render(); loadThumbs(id); setTimeout(() => $('#att-close')?.focus({ preventScroll: true })); },
@@ -802,7 +918,7 @@ document.addEventListener('submit', async e => {
 });
 document.addEventListener('input', e => {
   if (!active()) return; const t = e.target;
-  if (t.matches('.grid input')) {
+  if (t.matches('.grid input:not([type=checkbox])')) {
     const key = t.dataset.key, k = t.dataset.col; let v = t.value;
     if (k === 'containerNo' || k === 'customer') { const up = k === 'containerNo' ? v.toUpperCase().replace(/\s/g, '') : v.toUpperCase(); if (up !== v) { const p = t.selectionStart; t.value = up; try { t.setSelectionRange(p, p); } catch (x) {} } v = up.trim(); }
     const wasBlank = key[0] === 'n' && rowBlank(key);
@@ -814,13 +930,16 @@ document.addEventListener('input', e => {
   if (f && f.dataset.form === 'user-reset' && S.userAct) { S.userAct.password = t.value; return; }
   if (f && t.name) { S.form[t.name] = t.value; return; }
   if (t.id === 'inv-q') { S.q = t.value; scheduleRender(); }
+  if (t.id === 'post-q') { S.pq = t.value; scheduleRender(); }
   if (t.id === 'dd-q') { S.ddq = t.value; scheduleRender(); }
 });
 document.addEventListener('change', async e => {
   if (!active()) return; const t = e.target;
   if (t.id === 'viewas') { S.viewAs = t.value || null; S.open = null; if (S.tab === 'team' && !can.admin()) S.tab = 'dash'; render(); }
   else if (t.id === 'done-range') { S.doneRange = t.value; render(); }
-  else if (t.id === 'inv-file') { onUpload(t.files[0]); t.value = ''; }
+  else if (t.id === 'inv-file' || t.id === 'post-file') { onUpload(t.files[0]); t.value = ''; }
+  else if (t.dataset.sel) { t.checked ? S.sel.add(t.dataset.sel) : S.sel.delete(t.dataset.sel); S.bulkDel = false; render(); }
+  else if (t.dataset.selAll) { S.gridKeys.filter(x => x[0] === 'c').forEach(x => t.checked ? S.sel.add(x.slice(2)) : S.sel.delete(x.slice(2))); S.bulkDel = false; render(); }
   else if (t.id === 'att-cam' || t.id === 'att-files') { const fs = [...t.files]; t.value = ''; addFiles(S.attFor, fs); }
   else if (t.dataset.fk) { const set = S.f[t.dataset.fk]; t.checked ? set.add(t.value) : set.delete(t.value); render(); }
   else if (t.dataset.fd) { S.f[t.dataset.fd] = t.value; render(); }
@@ -844,16 +963,16 @@ document.addEventListener('change', async e => {
 document.addEventListener('keydown', e => {
   if (!active()) return; const t = e.target;
   if (e.key === 'Escape' && S.attFor) { if (S.viewer) { S.viewer = null; render(); } else closeSheet(); return; }
-  if (e.key === 'Escape' && S.full && !t.matches?.('.grid input')) { S.full = false; document.body.classList.remove('inv-full'); render(); return; }
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && S.tab === 'inv') { e.preventDefault(); saveGrid(); return; }
-  if (!t.matches?.('.grid input')) return;
+  if (e.key === 'Escape' && S.full && !t.matches?.('.grid input:not([type=checkbox])')) { S.full = false; document.body.classList.remove('inv-full'); render(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && (S.tab === 'inv' || S.tab === 'post')) { e.preventDefault(); saveGrid(); return; }
+  if (!t.matches?.('.grid input:not([type=checkbox])')) return;
   const dir = (e.key === 'ArrowDown' || (e.key === 'Enter' && !e.shiftKey)) ? 1 : (e.key === 'ArrowUp' || (e.key === 'Enter' && e.shiftKey)) ? -1 : 0;
   if (!dir || (t.type !== 'text' && e.key.startsWith('Arrow'))) return;
   e.preventDefault(); const keys = S.gridKeys; let i = keys.indexOf(t.dataset.key) + dir;
   while (i >= 0 && i < keys.length) { const el = document.getElementById(cellId(keys[i], t.dataset.col)); if (el && !el.disabled) { el.focus(); try { el.select(); } catch (x) {} return; } i += dir; }
 });
 document.addEventListener('paste', e => {
-  if (!active()) return; const t = e.target.closest?.('.grid input'); if (!t) return;
+  if (!active()) return; const t = e.target.closest?.('.grid input:not([type=checkbox])'); if (!t) return;
   const txt = (e.clipboardData?.getData('text/plain') || '').replace(/\r/g, '');
   if (!/[\t\n]/.test(txt.replace(/\n+$/, ''))) return;
   e.preventDefault(); const rows = txt.split('\n'); while (rows.length && !rows[rows.length - 1].trim()) rows.pop();

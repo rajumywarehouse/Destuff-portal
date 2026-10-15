@@ -129,6 +129,18 @@ In the portal, open **Users & customers**.
 
 Create a login with role **Display screen** (e.g. User ID `gate.screen`) and sign in with it on the TV or kiosk PC in the warehouse. It shows the live destuffing jobs (container, size, start time, running clock, Manual/Mechanical, dock) and the overall job queue, with no customer names. Visitors can type a full container number to see when it arrived and whether it is queued, being destuffed or done. Use **Full screen** (or F11) on the TV. Staff can preview it with the **Display screen** link at the top of the portal.
 
+## After destuffing (DO and gate-out)
+
+The **After destuffing** tab lists every container whose destuffing is completed, automatically, until the empty container is gated out. Fill in **DO Received Date**, **DO Validity Date**, **Storage Point** and **CFS Gate-Out Date & Time** in the grid, or upload an Excel file (matched by container number). A DO validity date that has passed is shown in red. These four fields can also be filled in from the Inventory tab.
+
+## Uploads keep one record per container
+
+Uploading a file never creates a duplicate for a container that is already in the portal: the existing container is updated (for example its CFS Gate-In date, DO dates, storage point or gate-out). If the same container appears twice in one file, the rows are merged. A gate-in date that is already saved can only be changed by a superadmin, because it sets the FIFO order; the upload message lists those containers.
+
+## Deleting inventory (superadmin)
+
+A superadmin sees tick boxes in the Inventory grid. Tick containers (or the box in the header to select everything in the current filtered view), click **Delete selected** and confirm. Their photos and files are deleted too, and the deletion is logged.
+
 ## Move to position
 
 **Move to position** (superadmin or Operations + Supervisor) places a container just ahead of whatever is at that position now, with a reason. It then moves up normally as jobs finish, so it is never stuck at a fixed number. **Back to FIFO place** undoes it.
