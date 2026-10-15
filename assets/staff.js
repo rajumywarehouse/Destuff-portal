@@ -37,7 +37,7 @@ function fresh(profile) {
     atts: new Map(), attCount: new Map(), thumbs: {}, doneAll: null,
     tab: 'dash', edits: {}, newRows: [], nseq: 0, q: '', confirmDel: null, open: null, form: {},
     doneRange: 'today', busy: false, gridKeys: [], runAll: false, f: null, dd: null, ddq: '',
-    attFor: null, attBusy: '', attDel: null, viewer: null, sel: new Set(), bulkDel: false, pq: '', pf: 'pending' };
+    attFor: null, attBusy: '', attDel: null, viewer: null, sel: new Set(), bulkDel: false, pq: '', pf: 'pending', qq: '' };
   resetFilters();
 }
 function resetFilters() { S.f = { status: ACTIVE_ST(), customer: new Set(), liner: new Set(), vessel: new Set(), consol: new Set(), port: new Set(), size: new Set(), item: new Set(), arrFrom: '', arrTo: '', pnrFrom: '', pnrTo: '', files: '', unsaved: false }; S.dd = null; S.ddq = ''; }
@@ -324,13 +324,22 @@ function heldCard(c) {
 }
 
 /* --- queue tab --- */
+function queueMatch(c) {
+  const q = S.qq.trim().toLowerCase(); if (!q) return true;
+  const qn = q.replace(/[\s-]/g, '');
+  return [c.containerNo, c.customer, custName(c.customer), c.vessel, c.consol, c.igmNo, c.item, c.liner, c.size]
+    .some(x => { const v = String(x || '').toLowerCase(); return v.includes(q) || (qn && v.replace(/[\s-]/g, '').includes(qn)); });
+}
 function vQueue() {
-  const q = fifo();
-  return `<section class="panel"><div class="sec-head"><div><h2>Destuffing job queue</h2><p>Strict FIFO by CFS arrival date and time. Supervisors can start only position 1. A customer may re-order only their own containers within their own places in the queue. Move to front and Hold need a superadmin or Operations + Supervisor; starting out of turn needs a superadmin. Every change is logged.</p></div>
+  const q = fifo(), shown = q.map((c, i) => [c, i]).filter(([c]) => queueMatch(c)), h = held(), hShown = h.filter(queueMatch), searching = !!S.qq.trim();
+  return `<section class="panel"><div class="sec-head"><div><h2>Destuffing job queue</h2><p>Strict FIFO by CFS arrival date and time. Supervisors can start only position 1. A customer may re-order only their own containers within their own places in the queue. Move to position and Hold need a superadmin or Operations + Supervisor; starting out of turn needs a superadmin. Every change is logged.</p></div>
     <span class="chip">${q.length} waiting · ${running().length} running</span></div>
-    ${q.length ? `<div class="qlist">${q.map((c, i) => qCard(c, i, true)).join('')}</div>` : `<div class="empty"><b>No containers are waiting.</b><span>Enter a CFS arrival date and time in Inventory to put a container in the queue.</span><button class="btn" data-tab="inv">Go to inventory</button></div>`}
+    ${q.length || h.length ? `<div class="toolbar"><div class="grow"><input type="search" id="queue-q" placeholder="Search container no., customer, vessel, consol, IGM, item…" value="${esc(S.qq)}" aria-label="Search the job queue" autocomplete="off" spellcheck="false"></div>${searching ? `<button class="btn ghost" data-act="qq-clear">Clear search</button>` : ''}</div>
+      ${searching ? `<div class="factive"><span>Showing <b>${shown.length}</b> of ${q.length} in the queue${h.length ? ` · ${hShown.length} of ${h.length} on hold` : ''}. Positions shown are the real queue positions.</span></div>` : ''}` : ''}
+    ${q.length ? (shown.length ? `<div class="qlist">${shown.map(([c, i]) => qCard(c, i, true)).join('')}</div>` : `<div class="empty"><b>No container in the queue matches “${esc(S.qq.trim())}”.</b><span>Check the number, or look in Inventory or After destuffing.</span></div>`)
+      : `<div class="empty"><b>No containers are waiting.</b><span>Enter a CFS gate-in date and time in Inventory to put a container in the queue.</span><button class="btn" data-tab="inv">Go to inventory</button></div>`}
   </section>
-  ${held().length ? `<section class="panel"><div class="sec-head"><div><h2>On hold</h2><p>Held containers are out of the queue and cannot be started. Releasing a hold puts the container back at its FIFO place.</p></div><span class="chip">${held().length} on hold</span></div><div class="qlist">${held().map(heldCard).join('')}</div></section>` : ''}`;
+  ${hShown.length ? `<section class="panel"><div class="sec-head"><div><h2>On hold</h2><p>Held containers are out of the queue and cannot be started. Releasing a hold puts the container back at its FIFO place.</p></div><span class="chip">${searching ? `${hShown.length} of ` : ''}${h.length} on hold</span></div><div class="qlist">${hShown.map(heldCard).join('')}</div></section>` : ''}`;
 }
 
 /* --- inventory grid --- */
@@ -863,6 +872,7 @@ document.addEventListener('click', e => {
     'bulk-del': () => { S.bulkDel = true; render(); }, 'bulk-del-no': () => { S.bulkDel = false; render(); }, 'bulk-del-yes': bulkDelete,
     'sel-clear': () => { S.sel.clear(); S.bulkDel = false; render(); },
     pf: () => { S.pf = k; render(); }, 'export-post': exportPost,
+    'qq-clear': () => { S.qq = ''; render(); $('#queue-q')?.focus(); },
     full: () => { S.full = !S.full; document.body.classList.toggle('inv-full', S.full); render(); },
     release: async () => { try { await must(sb.rpc('set_hold', { p_id: id, p_hold: false, p_reason: '' })); toast('Hold released. The container is back in the queue at its FIFO place.', 'ok'); } catch (err) { toast(errMsg(err), 'bad'); } },
     att: () => { S.attFor = id; S.attBusy = ''; S.attDel = null; S.viewer = null; render(); loadThumbs(id); setTimeout(() => $('#att-close')?.focus({ preventScroll: true })); },
@@ -931,6 +941,7 @@ document.addEventListener('input', e => {
   if (f && t.name) { S.form[t.name] = t.value; return; }
   if (t.id === 'inv-q') { S.q = t.value; scheduleRender(); }
   if (t.id === 'post-q') { S.pq = t.value; scheduleRender(); }
+  if (t.id === 'queue-q') { S.qq = t.value; scheduleRender(); }
   if (t.id === 'dd-q') { S.ddq = t.value; scheduleRender(); }
 });
 document.addEventListener('change', async e => {
