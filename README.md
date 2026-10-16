@@ -105,8 +105,8 @@ In the portal, open **Users & customers**.
    |---|---|
    | Superadmin | Everything, including FIFO bypass, priority, user management |
    | Operations + Supervisor | Inventory, starting/completing jobs, Move to position, Hold / Release |
-   | Operations team | Inventory only |
-   | Warehouse supervisor | Start/complete jobs and photos |
+   | Operations team | Inventory, starting/completing jobs |
+   | Warehouse supervisor | Starting/completing jobs and photos |
    | Read only | View everything, change nothing |
    | Customer | Only their own containers on the customer portal |
    | Display screen | The warehouse TV: live jobs, job queue and "check your container", with no customer names |
@@ -140,6 +140,10 @@ Uploading a file never creates a duplicate for a container that is already in th
 ## Deleting inventory (superadmin)
 
 A superadmin sees tick boxes in the Inventory grid. Tick containers (or the box in the header to select everything in the current filtered view), click **Delete selected** and confirm. Their photos and files are deleted too, and the deletion is logged.
+
+## Several teams starting at once (start window)
+
+The first **N** containers in the job queue can each be started by different people at the same time, in any order; containers further back stay locked until they move up. A superadmin sets N on the **Job queue** tab ("Containers that can be started at the same time", default 5). Superadmin, Operations + Supervisor, Warehouse supervisor and Operations team users can start and complete jobs; Read only, Customer and Display screen logins cannot. If two people tap the same container at the same moment, only one start counts and the other is told to pick the next one.
 
 ## Move to position
 

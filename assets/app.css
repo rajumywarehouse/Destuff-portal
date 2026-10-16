@@ -382,3 +382,6 @@ body.inv-full{overflow:hidden}
 .grid td.ro .rocell{display:block;padding:0 8px;white-space:nowrap;font-size:13px}
 .grid td.ro.mono .rocell{font-family:var(--f-mono);letter-spacing:.02em}
 .grid td.expired input{color:var(--bad);font-weight:600;background:var(--bad-soft)}
+.q.win{border-color:var(--queued);box-shadow:inset 3px 0 0 var(--queued-soft)}
+.q.win .pos{color:var(--queued)}
+.btn.start2{background:var(--primary-soft);color:var(--primary);border-color:var(--primary)}

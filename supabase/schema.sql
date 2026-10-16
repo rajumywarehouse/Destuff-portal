@@ -120,6 +120,15 @@ create table if not exists attachments (
 );
 create index if not exists attachments_container on attachments(container_id);
 
+-- Portal settings (one row). start_window = how many containers at the head of the queue can be started at the same time.
+create table if not exists settings (
+  id           int primary key default 1 check (id = 1),
+  start_window int not null default 5 check (start_window between 1 and 50),
+  updated_at   timestamptz not null default now(),
+  updated_by   uuid references auth.users(id) on delete set null
+);
+insert into settings (id) values (1) on conflict (id) do nothing;
+
 -- ---------- Who is calling? (security definer so policies don't recurse) ----------
 create or replace function my_role() returns app_role
 language sql stable security definer set search_path = public as $$
@@ -136,7 +145,7 @@ create or replace function can_write() returns boolean language sql stable set s
 create or replace function can_inv() returns boolean language sql stable set search_path = public as $$
   select my_role() in ('superadmin','both','ops') $$;
 create or replace function can_sup() returns boolean language sql stable set search_path = public as $$
-  select my_role() in ('superadmin','both','supervisor') $$;
+  select my_role() in ('superadmin','both','ops','supervisor') $$;
 create or replace function is_admin() returns boolean language sql stable set search_path = public as $$
   select my_role() = 'superadmin' $$;
 
@@ -253,31 +262,33 @@ $$;
 create or replace function start_job(p_id uuid, p_mode text, p_bay text default '', p_crew int default null,
                                      p_remarks text default '', p_reason text default '')
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare v_role app_role := my_role(); v_c containers; v_pos int;
+declare v_role app_role := my_role(); v_c containers; v_pos int; v_win int;
 begin
-  if v_role not in ('superadmin','both','supervisor') then raise exception 'Your role cannot start destuffing jobs.'; end if;
+  if not can_sup() then raise exception 'Your role cannot start destuffing jobs.'; end if;
   if p_mode is null or p_mode not in ('manual','mechanical','combined') then raise exception 'Choose a destuffing mode first.'; end if;
   perform pg_advisory_xact_lock(7311001);              -- one start at a time, so two supervisors can't race
   select * into v_c from containers where id = p_id for update;
-  if not found or v_c.status <> 'queued' then raise exception 'This container is no longer in the queue.'; end if;
+  if not found or v_c.status <> 'queued' then raise exception 'This container was just started by someone else, or is no longer in the queue. Pick the next one.'; end if;
   if v_c.on_hold then raise exception 'This container is on hold. Release the hold first.'; end if;
   select q.pos into v_pos from fifo_queue() q where q.container_id = p_id;
-  if v_pos > 1 then
-    if v_role <> 'superadmin' then raise exception 'FIFO is locked. Only a superadmin can start a container out of turn.'; end if;
+  v_win := coalesce((select start_window from settings where id = 1), 1);
+  if v_pos > v_win then
+    if v_role <> 'superadmin' then raise exception 'FIFO is locked: only the first % containers in the queue can be started. Only a superadmin can start this one out of turn.', v_win; end if;
     if coalesce(trim(p_reason), '') = '' then raise exception 'Enter the reason for bypassing FIFO.'; end if;
   end if;
   update containers set status = 'in_progress', mode = p_mode, bay = coalesce(trim(p_bay), ''), crew = p_crew,
          start_remarks = coalesce(trim(p_remarks), ''), started_at = now(), started_by = auth.uid(), queue_pos = v_pos,
-         bypass = case when v_pos > 1 then jsonb_build_object('reason', trim(p_reason), 'by', auth.uid(), 'at', now(), 'skipped', v_pos - 1) end
+         bypass = case when v_pos > v_win then jsonb_build_object('reason', trim(p_reason), 'by', auth.uid(), 'at', now(), 'skipped', v_pos - v_win, 'window', v_win) end
    where id = p_id;
   delete from overrides where container_id = p_id;
   insert into audit (by, action, container_no, container_id, detail)
   values (auth.uid(),
-          case when v_pos > 1 then 'Started out of turn (FIFO bypass)' else 'Destuffing started' end,
+          case when v_pos > v_win then 'Started out of turn (FIFO bypass)' else 'Destuffing started' end,
           v_c.container_no, p_id,
           (case p_mode when 'manual' then 'Manual' when 'mechanical' then 'Mechanical' else 'Manual + Mechanical' end)
           || case when coalesce(trim(p_bay), '') <> '' then ' · ' || trim(p_bay) else '' end
-          || case when v_pos > 1 then ' · skipped ' || (v_pos - 1) || ' · ' || trim(p_reason) else '' end);
+          || ' · position ' || v_pos
+          || case when v_pos > v_win then ' · outside the first ' || v_win || ' · ' || trim(p_reason) else '' end);
   return jsonb_build_object('position', v_pos);
 end $$;
 
@@ -458,6 +469,12 @@ alter table containers  enable row level security;
 alter table overrides   enable row level security;
 alter table audit       enable row level security;
 alter table attachments enable row level security;
+alter table settings    enable row level security;
+drop policy if exists settings_read  on settings;
+drop policy if exists settings_write on settings;
+create policy settings_read  on settings for select to authenticated using (is_staff());
+create policy settings_write on settings for update to authenticated using (is_admin()) with check (is_admin());
+revoke insert, delete on settings from authenticated, anon;
 
 drop policy if exists customers_read  on customers;
 drop policy if exists customers_write on customers;
@@ -538,7 +555,7 @@ create policy cfs_att_delete on storage.objects for delete to authenticated
 do $$
 declare t text;
 begin
-  foreach t in array array['containers','overrides','attachments','audit','profiles','customers'] loop
+  foreach t in array array['containers','overrides','attachments','audit','profiles','customers','settings'] loop
     begin
       execute format('alter publication supabase_realtime add table %I', t);
     exception when duplicate_object then null;

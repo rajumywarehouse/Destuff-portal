@@ -35,7 +35,7 @@ function fresh(profile) {
   S = { me: profile, uid: profile.id, live: false, loaded: false, ch: null, viewAs: null,
     containers: new Map(), overrides: new Map(), profiles: new Map(), customers: new Map(), audit: [],
     atts: new Map(), attCount: new Map(), thumbs: {}, doneAll: null,
-    tab: 'dash', edits: {}, newRows: [], nseq: 0, q: '', confirmDel: null, open: null, form: {},
+    tab: 'dash', win: 1, edits: {}, newRows: [], nseq: 0, q: '', confirmDel: null, open: null, form: {},
     doneRange: 'today', busy: false, gridKeys: [], runAll: false, f: null, dd: null, ddq: '',
     attFor: null, attBusy: '', attDel: null, viewer: null, sel: new Set(), bulkDel: false, pq: '', pf: 'pending', qq: '' };
   resetFilters();
@@ -44,7 +44,7 @@ function resetFilters() { S.f = { status: ACTIVE_ST(), customer: new Set(), line
 
 /* ---------- roles ---------- */
 function role() { return S.viewAs || S.me.role; }
-const can = { inv: () => ['superadmin','ops','both'].includes(role()), sup: () => ['superadmin','supervisor','both'].includes(role()), admin: () => role() === 'superadmin',
+const can = { inv: () => ['superadmin','ops','both'].includes(role()), sup: () => ['superadmin','supervisor','both','ops'].includes(role()), admin: () => role() === 'superadmin',
   front: () => ['superadmin','both'].includes(role()), hold: () => ['superadmin','both'].includes(role()) };
 const canAttach = () => ['superadmin','both','ops','supervisor'].includes(role());
 const canDelAtt = a => canAttach() && (a.by === S.uid || can.admin() || can.inv());
@@ -105,8 +105,12 @@ async function loadAll() {
     S.customers = new Map(cu.map(r => [r.code, r]));
     S.audit = au.map(r => ({ ...r, at: ms(r.at) }));
     S.atts = new Map(at.map(r => [r.id, attFrom(r)])); recount();
-    S.loaded = true; S.doneAll = null; refreshQueue(); scheduleRender();
+    S.loaded = true; S.doneAll = null; refreshQueue(); loadSettings(); scheduleRender();
   } catch (e) { toast('Could not load data: ' + errMsg(e), 'bad'); }
+}
+async function loadSettings() {
+  try { const { data, error } = await sb.from('settings').select('start_window').eq('id', 1).maybeSingle(); if (!error && data?.start_window) { if (S.win !== data.start_window) { S.win = data.start_window; scheduleRender(); } } }
+  catch (e) {}
 }
 function recount() { const m = new Map(); S.atts.forEach(a => m.set(a.cid, (m.get(a.cid) || 0) + 1)); S.attCount = m; }
 function subscribe() {
@@ -229,7 +233,7 @@ function vDash() {
       ${runs.length ? `<div class="rlist">${(S.runAll ? runs : runs.slice(0, 5)).map(rRow).join('')}</div>${runs.length > 5 ? `<button class="btn sm more" data-act="run-all">${S.runAll ? 'Show first 5' : `Show all ${runs.length} running`}</button>` : ''}` : `<div class="empty"><b>No container is being destuffed.</b><span>Start the job at position 1 of the queue to begin the clock.</span></div>`}
     </section>
     <section class="panel" aria-labelledby="h-next">
-      <div class="sec-head"><div><h2 id="h-next">Next in FIFO</h2><p>Ordered by CFS arrival time. Only position 1 can be started.</p></div><button class="btn sm" data-tab="queue">Full queue (${q.length})</button></div>
+      <div class="sec-head"><div><h2 id="h-next">Next in FIFO</h2><p>Ordered by CFS gate-in time. The first ${S.win} can be started at the same time.</p></div><button class="btn sm" data-tab="queue">Full queue (${q.length})</button></div>
       ${q.length ? `<div class="qlist">${q.slice(0, 5).map((c, i) => qCard(c, i, false)).join('')}</div>` : `<div class="empty"><b>The queue is empty.</b><span>Containers join the queue once their CFS arrival date and time is entered in Inventory.</span></div>`}
     </section>
   </div>
@@ -261,18 +265,18 @@ function rRow(c) {
   </article>`;
 }
 function qCard(c, i, full) {
-  const head = i === 0, pr = S.overrides.get(c.id), open = S.open?.id === c.id ? S.open.type : null, a = arrMs(c);
+  const head = i === 0, inWin = i < S.win, pr = S.overrides.get(c.id), open = S.open?.id === c.id ? S.open.type : null, a = arrMs(c);
   let acts = '';
-  if (head && can.sup()) acts += `<button class="btn primary" data-act="open-start" data-id="${esc(c.id)}">Start destuffing</button>`;
-  else if (head) acts += `<span class="lock">Next to start</span>`;
+  if (inWin && can.sup()) acts += `<button class="btn ${head ? 'primary' : 'start2'}" data-act="open-start" data-id="${esc(c.id)}">Start destuffing</button>`;
+  else if (inWin) acts += `<span class="lock">Ready to start</span>`;
   else if (can.admin() && can.sup()) acts += `<button class="btn sm" data-act="open-bypass" data-id="${esc(c.id)}">Start out of turn</button>`;
-  else acts += `<span class="lock">${lockIcon} Locked by FIFO · waits for position ${i}</span>`;
+  else acts += `<span class="lock">${lockIcon} Locked by FIFO · opens when it reaches position ${S.win}</span>`;
   if (can.front()) acts += `<button class="btn ghost sm" data-act="open-prio" data-id="${esc(c.id)}">Move to position</button>`;
   if (can.front() && pr) acts += `<button class="btn ghost sm" data-act="unprio" data-id="${esc(c.id)}">Back to FIFO place</button>`;
   if (can.hold()) acts += `<button class="btn ghost sm" data-act="open-hold" data-id="${esc(c.id)}">Hold</button>`;
   const form = open === 'start' ? startForm(c, false, i) : open === 'bypass' ? startForm(c, true, i) : open === 'prio' ? prioForm(c, i) : open === 'hold' ? holdForm(c) : '';
-  return `<article class="q ${head ? 'head' : ''} ${pr ? 'prio' : ''}">
-    <div class="pos">${i + 1}<small>${head ? 'Next' : 'FIFO'}</small></div>
+  return `<article class="q ${head ? 'head' : inWin ? 'win' : ''} ${pr ? 'prio' : ''}">
+    <div class="pos">${i + 1}<small>${head ? 'Next' : inWin ? 'Ready' : 'FIFO'}</small></div>
     <div class="q-main">
       <div class="q-line"><span class="cno">${cnoHtml(c.containerNo)}</span><span class="pill st-mode">${esc(c.size || '—')}</span>${attBtn(c)}${pr ? `<span class="pill st-prio" title="${esc(pr.reason || '')}">Moved by staff</span>` : ''}${c.customerRank != null && !pr ? `<span class="pill st-new" title="The customer chose the order of their own containers (their choice #${c.customerRank}). Other customers are not affected.">Customer sequence</span>` : ''}</div>
       <div class="q-sub"><span>Arrived <b>${fmtT(c.cfsArrival)}</b></span><span>Waiting <b>${a ? `<span data-since="${a}">${dur(Date.now() - a)}</span>` : '—'}</b></span>${c.customer ? `<span>${esc(custName(c.customer))}</span>` : ''}${full ? `<span>${esc(c.liner || '—')} · ${esc(c.vessel || '—')}</span><span>${esc(c.item || '—')} · ${esc(c.consol || '')}</span><span>IGM ${esc(c.igmNo || '—')}</span>` : `<span>${esc(c.item || '')}</span>`}</div>
@@ -283,7 +287,7 @@ function qCard(c, i, full) {
 const fv = k => esc(S.form[k] ?? '');
 function startForm(c, bypass, i) {
   return `<form class="jobform" data-form="start" data-id="${esc(c.id)}" data-bypass="${bypass ? 1 : 0}">
-    ${bypass ? `<div class="note">This container is at position ${i + 1}. Starting it skips ${i} container${i > 1 ? 's' : ''} ahead of it in FIFO. Your reason is saved to the audit log.</div>` : ''}
+    ${bypass ? `<div class="note">This container is at position ${i + 1}, outside the first ${S.win} that can be started. Starting it now bypasses FIFO. Your reason is saved to the audit log.</div>` : ''}
     <div class="fl" id="ml-${esc(c.id)}">Destuffing mode</div>
     <div class="seg" role="radiogroup" aria-labelledby="ml-${esc(c.id)}">${Object.entries(MODES).map(([k, l]) => `<label><input type="radio" name="mode" id="f-mode-${k}" value="${k}" ${S.form.mode === k ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div>
     <div class="row2"><label>Bay / dock<input id="f-bay" name="bay" value="${fv('bay')}" placeholder="e.g. Bay 3"></label><label>Crew size<input id="f-crew" name="crew" type="number" min="0" inputmode="numeric" value="${fv('crew')}"></label></div>
@@ -332,8 +336,9 @@ function queueMatch(c) {
 }
 function vQueue() {
   const q = fifo(), shown = q.map((c, i) => [c, i]).filter(([c]) => queueMatch(c)), h = held(), hShown = h.filter(queueMatch), searching = !!S.qq.trim();
-  return `<section class="panel"><div class="sec-head"><div><h2>Destuffing job queue</h2><p>Strict FIFO by CFS arrival date and time. Supervisors can start only position 1. A customer may re-order only their own containers within their own places in the queue. Move to position and Hold need a superadmin or Operations + Supervisor; starting out of turn needs a superadmin. Every change is logged.</p></div>
+  return `<section class="panel"><div class="sec-head"><div><h2>Destuffing job queue</h2><p>Strict FIFO by CFS gate-in time. The first ${S.win} container${S.win > 1 ? 's' : ''} in the queue can be started by different people at the same time; the rest stay locked until they move up. A customer may re-order only their own containers within their own places in the queue. Move to position and Hold need a superadmin or Operations + Supervisor; starting out of turn needs a superadmin. Every change is logged.</p></div>
     <span class="chip">${q.length} waiting · ${running().length} running</span></div>
+    ${can.admin() && !S.viewAs ? `<form class="inline-form" data-form="win"><label>Containers that can be started at the same time<input id="win-n" name="win" type="number" min="1" max="50" inputmode="numeric" value="${S.win}" style="width:90px" required></label><button class="btn sm" type="submit">Save</button><span class="hint">Set this to the number of docks / teams that can work at once.</span></form>` : ''}
     ${q.length || h.length ? `<div class="toolbar"><div class="grow"><input type="search" id="queue-q" placeholder="Search container no., customer, vessel, consol, IGM, item…" value="${esc(S.qq)}" aria-label="Search the job queue" autocomplete="off" spellcheck="false"></div>${searching ? `<button class="btn ghost" data-act="qq-clear">Clear search</button>` : ''}</div>
       ${searching ? `<div class="factive"><span>Showing <b>${shown.length}</b> of ${q.length} in the queue${h.length ? ` · ${hShown.length} of ${h.length} on hold` : ''}. Positions shown are the real queue positions.</span></div>` : ''}` : ''}
     ${q.length ? (shown.length ? `<div class="qlist">${shown.map(([c, i]) => qCard(c, i, true)).join('')}</div>` : `<div class="empty"><b>No container in the queue matches “${esc(S.qq.trim())}”.</b><span>Check the number, or look in Inventory or After destuffing.</span></div>`)
@@ -829,7 +834,7 @@ function vSheet() {
 async function startJob(id, bypass, fd) {
   const c = S.containers.get(id); if (!fd.mode) return toast('Choose a destuffing mode first.', 'bad');
   const r = await must(sb.rpc('start_job', { p_id: id, p_mode: fd.mode, p_bay: fd.bay || '', p_crew: fd.crew !== '' && fd.crew != null ? +fd.crew : null, p_remarks: fd.remarks || '', p_reason: fd.reason || '' }));
-  S.open = null; S.form = {}; toast(`Clock started for ${c?.containerNo || 'container'}${r?.position > 1 ? ` (out of turn, position ${r.position})` : ''}.`, 'ok');
+  S.open = null; S.form = {}; toast(`Clock started for ${c?.containerNo || 'container'}${r?.position > S.win ? ` (out of turn, position ${r.position})` : ''}.`, 'ok');
 }
 async function completeJob(id, fd) {
   const c = S.containers.get(id);
@@ -905,7 +910,12 @@ document.addEventListener('submit', async e => {
   const fd = Object.fromEntries(new FormData(f)); S.busy = true; f.querySelectorAll('button').forEach(x => x.disabled = true);
   try {
     const id = f.dataset.id;
-    if (f.dataset.form === 'user-create') {
+    if (f.dataset.form === 'win') {
+      const n = Math.min(50, Math.max(1, parseInt(fd.win, 10) || 1));
+      const { data, error } = await sb.from('settings').update({ start_window: n, updated_at: new Date().toISOString(), updated_by: S.uid }).eq('id', 1).select();
+      if (error || !data?.length) throw { message: error && /settings/.test(error.message || '') ? 'Run the latest database update in Supabase first.' : (error ? errMsg(error) : 'Could not save the setting.') };
+      S.win = n; await log('Start window changed', null, `${n} container${n > 1 ? 's' : ''} can be started at the same time`); toast(`Up to ${n} container${n > 1 ? 's' : ''} can now be started at the same time.`, 'ok');
+    } else if (f.dataset.form === 'user-create') {
       const body = { action: 'create', full_name: fd.full_name, username: (fd.username || '').trim().toLowerCase(), password: fd.password, role: fd.role, customer_code: fd.customer_code || null };
       const r = await adminApi(body);
       S.createdCred = { name: fd.full_name, username: r.username, password: fd.password };
@@ -998,8 +1008,8 @@ window.addEventListener('beforeunload', e => { if (active() && pendingCount()) {
 return {
   start(profile) {
     if (S && S.uid === profile.id && S.ch) { S.me = profile; render(); return; }
-    fresh(profile); shell(); subscribe();
+    fresh(profile); shell(); subscribe(); S.setTimer = setInterval(() => { if (S && !document.hidden) loadSettings(); }, 60000);
   },
-  stop() { if (S?.ch) sb.removeChannel(S.ch); document.body.classList.remove('inv-full'); S = null; },
+  stop() { if (S?.setTimer) clearInterval(S.setTimer); if (S?.ch) sb.removeChannel(S.ch); document.body.classList.remove('inv-full'); S = null; },
 };
 })();
