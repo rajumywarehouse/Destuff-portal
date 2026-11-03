@@ -251,13 +251,22 @@ function vDash() {
     </div>
   </section>`;
 }
+const photoCount = cid => attsOf(cid).filter(isImg).length;
+function photoBar(c) {
+  const n = photoCount(c.id), busy = S.upBusy?.[c.id];
+  return `<div class="photo-bar">${canAttach() ? `<label class="btn sm file-btn photo-add">${camIcon} Add photos<input type="file" id="qp-${esc(c.id)}" data-quick="${esc(c.id)}" multiple accept="image/*"></label>` : ''}
+    <button type="button" class="btn sm ghost" data-act="att" data-id="${esc(c.id)}">${n ? `View ${n} photo${n > 1 ? 's' : ''}` : 'No photos yet'}</button>
+    ${n ? `<button type="button" class="btn sm ghost" data-act="report" data-id="${esc(c.id)}" ${S.repBusy === c.id ? 'disabled' : ''}>${S.repBusy === c.id ? 'Making PDF…' : 'Photo report (PDF)'}</button>` : ''}
+    ${busy ? `<span class="up-busy" role="status">${esc(busy)}</span>` : ''}</div>`;
+}
 function rRow(c) {
   const el = Date.now() - c.startedAt, open = S.open?.id === c.id ? S.open.type : null;
   return `<article class="rr ${el > SLA_MIN * 6e4 ? 'over' : ''}" data-run="${c.startedAt}">
     <div class="q-main">
-      <div class="q-line"><span class="cno">${cnoHtml(c.containerNo)}</span><span class="pill st-mode">${esc(c.size || '—')}</span><span class="pill st-mode">${MODES[c.mode] || '—'}</span>${c.bypass ? `<span class="pill st-prio" title="${esc(c.bypass.reason)}">FIFO bypass</span>` : ''}${attBtn(c)}</div>
+      <div class="q-line"><span class="cno">${cnoHtml(c.containerNo)}</span><span class="pill st-mode">${esc(c.size || '—')}</span><span class="pill st-mode">${MODES[c.mode] || '—'}</span>${c.bypass ? `<span class="pill st-prio" title="${esc(c.bypass.reason)}">FIFO bypass</span>` : ''}</div>
       <div class="q-sub"><span>Started <b>${fmtT(c.startedAt)}</b></span><span>${esc(c.bay || 'No bay')}${c.crew != null ? ` · crew ${esc(c.crew)}` : ''}</span><span>by ${who(c.startedBy)}</span><span>${esc(c.customer ? custName(c.customer) : c.item)}</span></div>
       <div class="sla thin"><i data-sla="${c.startedAt}"></i></div>
+      ${photoBar(c)}
     </div>
     <div class="rr-side"><div class="clock sm" data-since="${c.startedAt}" data-fmt="clock">${clock(el)}</div>
       ${open ? '' : `<div class="actions">${can.admin() ? `<button class="btn ghost sm" data-act="open-requeue" data-id="${esc(c.id)}">Requeue</button>` : ''}${can.sup() ? `<button class="btn live sm" data-act="open-done" data-id="${esc(c.id)}">Complete</button>` : ''}</div>`}</div>
@@ -764,34 +773,54 @@ function vTeam() {
 const MAXB = 10 * 1024 * 1024, OKEXT = ['jpg','jpeg','png','webp','gif','pdf','docx','xlsx','pptx','csv','txt','zip'];
 const attsOf = cid => [...S.atts.values()].filter(a => a.cid === cid).sort((a, b) => a.at - b.at);
 const isImg = a => /^image\//.test(a?.type || '');
-async function shrink(file, max, q) {
+const PHOTO_MAX = 1600, PHOTO_Q = 0.72, THUMB_MAX = 240, THUMB_Q = 0.6;
+async function decodeImage(file) {
+  if (window.createImageBitmap) { try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) {} }
   const url = URL.createObjectURL(file);
-  try { const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
-    const s = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight)), cv = document.createElement('canvas');
-    cv.width = Math.round(img.naturalWidth * s); cv.height = Math.round(img.naturalHeight * s); const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height); g.drawImage(img, 0, 0, cv.width, cv.height);
-    const blob = await new Promise(r => cv.toBlob(r, 'image/jpeg', q)); return { blob, dataUrl: cv.toDataURL('image/jpeg', q) };
-  } finally { URL.revokeObjectURL(url); }
+  try { return await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; }); }
+  finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+}
+function drawScaled(img, max) {
+  const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height, s = Math.min(1, max / Math.max(w, h)), cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(w * s)); cv.height = Math.max(1, Math.round(h * s));
+  const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height); g.drawImage(img, 0, 0, cv.width, cv.height); return cv;
+}
+const canvasJpeg = (cv, q) => new Promise(r => cv.toBlob(r, 'image/jpeg', q));
+/* Photos are stored as compressed JPEGs (max 1600 px, quality 72) plus a 240 px thumbnail */
+async function compressPhoto(file) {
+  const img = await decodeImage(file);
+  let blob = await canvasJpeg(drawScaled(img, PHOTO_MAX), PHOTO_Q);
+  const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+  if (file.type === 'image/jpeg' && Math.max(w, h) <= PHOTO_MAX && file.size <= blob.size) blob = file;   // already small: keep the original
+  const thumb = drawScaled(img, THUMB_MAX).toDataURL('image/jpeg', THUMB_Q);
+  if (img.close) img.close();
+  return { blob, thumb };
 }
 async function addFiles(cid, files) {
-  const c = S.containers.get(cid); if (!c || !canAttach() || !files?.length) return; const done = [];
-  for (const f of files) {
+  const c = S.containers.get(cid); if (!c || !canAttach() || !files?.length) return;
+  const done = []; let before = 0, after = 0; S.upBusy = S.upBusy || {};
+  const setBusy = t => { S.attBusy = S.attFor === cid ? t : ''; if (t) S.upBusy[cid] = t; else delete S.upBusy[cid]; scheduleRender(); };
+  for (const [n, f] of [...files].entries()) {
     const ext = (f.name.split('.').pop() || '').toLowerCase(), img = /^image\//.test(f.type) && !/svg/.test(f.type);
-    let blob = f, type = f.type, name = f.name, thumb = null;
-    S.attBusy = `Uploading ${f.name}…`; render();
+    let blob = f, type = f.type, name = f.name || `photo-${n + 1}.jpg`, thumb = null;
+    setBusy(`Uploading ${n + 1} of ${files.length}…`);
     try {
-      if (img) { const big = await shrink(f, 1600, 0.75); blob = big.blob; type = 'image/jpeg'; name = name.replace(/\.[^.]+$/, '') + '.jpg'; thumb = (await shrink(f, 240, 0.6)).dataUrl; }
+      if (img) { const r = await compressPhoto(f); blob = r.blob; thumb = r.thumb; type = 'image/jpeg'; name = name.replace(/\.[^.]+$/, '') + '.jpg'; }
       else if (!OKEXT.includes(ext)) { toast(`${f.name}: this file type is not supported. Use photos, PDF, Word, Excel, PowerPoint, CSV, text or ZIP.`, 'bad'); continue; }
       if (!type) type = { pdf: 'application/pdf', csv: 'text/csv', txt: 'text/plain', zip: 'application/zip' }[ext] || 'application/octet-stream';
       if (blob.size > MAXB) { toast(`${f.name} is ${fsize(blob.size)}. Files must be 10 MB or smaller.`, 'bad'); continue; }
-      const path = `${cid}/${(crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36))}-${name.replace(/[^\w.\-]+/g, '_').slice(-80)}`;
+      const path = `${cid}/${(crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + n)}-${name.replace(/[^\w.\-]+/g, '_').slice(-80)}`;
       await must(sb.storage.from('attachments').upload(path, blob, { contentType: type, upsert: false }));
-      try { const row = await must(sb.from('attachments').insert({ container_id: cid, container_no: c.containerNo, name, type, size: blob.size, path, thumb, stage: c.status }).select().single()); S.atts.set(row.id, attFrom(row)); recount(); }
+      try { const row = await must(sb.from('attachments').insert({ container_id: cid, container_no: c.containerNo, name, type, size: blob.size, path, thumb, stage: c.status }).select().single()); S.atts.set(row.id, attFrom(row)); if (thumb) S.thumbs[row.id] = thumb; recount(); }
       catch (e) { await sb.storage.from('attachments').remove([path]); throw e; }
-      done.push(name);
+      done.push(name); before += f.size; after += blob.size;
     } catch (e) { toast(img && !e?.message ? `${f.name}: this photo format cannot be read here. Use JPG or PNG.` : `${f.name}: ${errMsg(e)}`, 'bad'); }
   }
-  S.attBusy = ''; render();
-  if (done.length) { await log('Photos/files added', c, done.join(', ')); toast(`Added ${done.length} file${done.length > 1 ? 's' : ''} to ${c.containerNo}.`, 'ok'); }
+  setBusy('');
+  if (done.length) {
+    await log('Photos/files added', c, `${done.length} file${done.length > 1 ? 's' : ''}`);
+    toast(`Added ${done.length} file${done.length > 1 ? 's' : ''} to ${c.containerNo}${before > after * 1.2 ? ` (compressed ${fsize(before)} → ${fsize(after)})` : ''}.`, 'ok');
+  }
 }
 async function loadThumbs(cid) {
   const need = attsOf(cid).filter(a => isImg(a) && !(a.id in S.thumbs)); if (!need.length) return;
@@ -816,7 +845,7 @@ function vSheet() {
   if (S.viewer) { const a = S.atts.get(S.viewer.id);
     body = `<div class="viewer"><img src="${esc(S.viewer.url)}" alt="${esc(a?.name || 'Photo')}"><div class="actions"><button type="button" class="btn" data-act="viewer-close">Back to all files</button><button type="button" class="btn" data-act="att-dl" data-aid="${esc(S.viewer.id)}">Download</button><span class="muted">${esc(a?.name || '')} · ${fsize(a?.size)}</span></div></div>`;
   } else {
-    body = (canAttach() ? `<div class="drop" id="att-drop"><div class="actions"><label class="btn primary file-btn">Take photo<input type="file" id="att-cam" accept="image/*" capture="environment"></label><label class="btn file-btn">Choose photos or files<input type="file" id="att-files" multiple accept="image/*,.pdf,.docx,.xlsx,.pptx,.csv,.txt,.zip"></label></div><span class="hint">Optional. Add as many as you need, or drop files here. Photos are resized to 1600 px; other files up to 10 MB. Tick "Customer can see" to share a file on the customer portal.</span></div>` : `<p class="hint">${lockIcon} Your role can view attachments but not add them.</p>`)
+    body = (canAttach() ? `<div class="drop" id="att-drop"><div class="actions"><label class="btn primary file-btn">Take photo<input type="file" id="att-cam" accept="image/*" capture="environment"></label><label class="btn file-btn">Choose photos or files<input type="file" id="att-files" multiple accept="image/*,.pdf,.docx,.xlsx,.pptx,.csv,.txt,.zip"></label></div><span class="hint">Add as many as you need, at any time; several people can add photos to the same container. Photos are compressed (max 1600 px) before upload; other files up to 10 MB. Tick "Customer can see" to share a file on the customer portal.</span></div>` : `<p class="hint">${lockIcon} Your role can view attachments but not add them.</p>`)
       + (S.attBusy ? `<div class="note info">${esc(S.attBusy)}</div>` : '')
       + (list.length ? `<div class="tiles">${list.map(a => { const ext = (a.name.split('.').pop() || 'file').toUpperCase(), th = S.thumbs[a.id];
         return `<div class="tile"><button type="button" class="th" data-act="att-view" data-aid="${esc(a.id)}" aria-label="Open ${esc(a.name)}">${isImg(a) ? (th ? `<img src="${esc(th)}" alt="">` : 'Photo') : esc(ext.slice(0, 5))}</button>
@@ -826,8 +855,88 @@ function vSheet() {
         : `<div class="empty"><b>No photos or files yet.</b><span>Seal photos, damage, survey reports or tally sheets can be attached at any stage.</span></div>`);
   }
   return `<div class="sheet" id="sheet-bg"><div class="sheet-in" role="dialog" aria-modal="true" aria-labelledby="sheet-h">
-    <div class="sheet-h"><div style="display:grid;gap:6px;min-width:0"><h2 id="sheet-h">Photos &amp; files · ${list.length}</h2><div class="q-line"><span class="cno">${cnoHtml(c.containerNo)}</span>${pill(c.status)}<span class="muted">${esc(c.customer || '')} · ${esc(c.size || '')} · ${esc(c.item || '')}</span></div></div><button type="button" class="btn ghost" data-act="att-close" id="att-close">Close</button></div>
+    <div class="sheet-h"><div style="display:grid;gap:6px;min-width:0"><h2 id="sheet-h">Photos &amp; files · ${list.length}</h2>${list.some(isImg) ? `<div><button type="button" class="btn sm" data-act="report" data-id="${esc(c.id)}" ${S.repBusy === c.id ? 'disabled' : ''}>${S.repBusy === c.id ? 'Making PDF…' : 'Photo report (PDF)'}</button></div>` : ''}<div class="q-line"><span class="cno">${cnoHtml(c.containerNo)}</span>${pill(c.status)}<span class="muted">${esc(c.customer || '')} · ${esc(c.size || '')} · ${esc(c.item || '')}</span></div></div><button type="button" class="btn ghost" data-act="att-close" id="att-close">Close</button></div>
     ${body}</div></div>`;
+}
+
+/* ---------- photo report (PDF) ---------- */
+const PDFLIB_URL = 'https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js';
+let pdfLibLoading = null;
+function loadPdfLib() {
+  if (window.PDFLib) return Promise.resolve(window.PDFLib);
+  return pdfLibLoading || (pdfLibLoading = new Promise((res, rej) => {
+    const sc = document.createElement('script'); sc.src = PDFLIB_URL; sc.async = true;
+    sc.onload = () => window.PDFLib ? res(window.PDFLib) : rej(new Error('PDF tool did not load'));
+    sc.onerror = () => { pdfLibLoading = null; rej(new Error('Could not load the PDF tool. Check the internet connection and try again.')); };
+    document.head.appendChild(sc);
+  }));
+}
+/* PDF standard fonts only cover Western characters: replace anything else */
+const pdfSafe = t => String(t ?? '').replace(/[→]/g, '->').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/…/g, '...').replace(/[^\x20-\x7E -ÿ]/g, '?');
+async function photoJpegBytes(a) {
+  const res = await fetch(await signed(a)); if (!res.ok) throw new Error(`photo ${a.name} could not be downloaded`);
+  const blob = await res.blob();
+  if (blob.type === 'image/jpeg' || /\.jpe?g$/i.test(a.name)) return new Uint8Array(await blob.arrayBuffer());
+  const cv = drawScaled(await decodeImage(blob), PHOTO_MAX); return new Uint8Array(await (await canvasJpeg(cv, 0.8)).arrayBuffer());
+}
+async function photoReport(cid) {
+  const c = S.containers.get(cid); if (!c || S.repBusy) return;
+  const photos = attsOf(cid).filter(isImg), others = attsOf(cid).filter(a => !isImg(a));
+  if (!photos.length) return toast('This container has no photos yet.', 'bad');
+  S.repBusy = cid; scheduleRender();
+  try {
+    const { PDFDocument, StandardFonts, rgb } = await loadPdfLib();
+    const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica), bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+    pdf.setTitle(`Photo report ${c.containerNo}`); pdf.setCreator(CFG.COMPANY_NAME || 'CFS Destuffing Portal');
+    const W = 595.28, H = 841.89, M = 36, ink = rgb(0.075, 0.125, 0.17), muted = rgb(0.34, 0.4, 0.46), line = rgb(0.83, 0.86, 0.89), navy = rgb(0.106, 0.302, 0.471);
+    const fit = (t, f, size, max) => { t = pdfSafe(t); if (f.widthOfTextAtSize(t, size) <= max) return t; while (t.length > 1 && f.widthOfTextAtSize(t + '...', size) > max) t = t.slice(0, -1); return t + '...'; };
+    const text = (pg, t, x, y, size = 10, f = font, color = ink, max = W - 2 * M) => pg.drawText(fit(t, f, size, max), { x, y, size, font: f, color });
+    // ---- cover page with container details
+    let pg = pdf.addPage([W, H]); let y = H - M;
+    text(pg, CFG.COMPANY_NAME || 'CFS Destuffing Portal', M, y - 10, 10, bold, muted); y -= 34;
+    text(pg, 'Destuffing photo report', M, y, 20, bold, navy); y -= 30;
+    text(pg, c.containerNo, M, y, 26, bold); y -= 16;
+    pg.drawLine({ start: { x: M, y }, end: { x: W - M, y }, thickness: 1, color: line }); y -= 22;
+    const stLabel = c.status === 'completed' ? 'Destuffing completed' : c.status === 'in_progress' ? 'Destuffing in progress' : (ST[c.status] || c.status);
+    const rows = [
+      ['Container No.', c.containerNo], ['Size', c.size], ['Customer', c.customer ? `${c.customer} - ${custName(c.customer)}` : ''], ['Consol', c.consol],
+      ['Vessel', c.vessel], ['Liner', c.liner], ['IGM No.', c.igmNo], ['Item', c.item], ['Port', c.port],
+      ['CFS Gate-In', c.cfsArrival ? fmtDT(c.cfsArrival) : ''], ['Status', stLabel],
+      ['Destuffing started', c.startedAt ? fmtDT(c.startedAt) : ''], ['Destuffing completed', c.completedAt ? fmtDT(c.completedAt) : (c.status === 'in_progress' ? 'In progress' : '')],
+      ['Duration', c.durationMs ? dur(c.durationMs) : ''], ['Mode', MODES[c.mode] || ''], ['Dock / bay', c.bay], ['Crew', c.crew ?? ''], ['Packages', c.packages ?? ''],
+      ['Photos in this report', String(photos.length)], ['Generated', `${fmtDT(Date.now())} by ${S.me.full_name || S.me.username || S.me.email || ''}`],
+    ].filter(r => r[1] !== '' && r[1] != null);
+    for (const [k, v] of rows) { text(pg, k, M, y, 10, font, muted, 150); text(pg, String(v), M + 160, y, 11, bold, ink, W - 2 * M - 160); y -= 19; }
+    if (others.length) { y -= 8; text(pg, `Other files attached (${others.length}, not shown in this report):`, M, y, 10, bold, muted); y -= 16;
+      for (const a of others.slice(0, 12)) { text(pg, `- ${a.name}  (${fsize(a.size)}, ${fmtDT(a.at)})`, M + 8, y, 9, font, muted); y -= 13; } }
+    // ---- photos: 2 x 2 per page, in upload order, each with time, uploader and stage
+    const COLS = 2, ROWS = 2, GAP = 14, CAP = 26, cw = (W - 2 * M - GAP) / COLS, ch = (H - 2 * M - 30 - GAP) / ROWS - CAP;
+    for (let i = 0; i < photos.length; i++) {
+      const slot = i % (COLS * ROWS);
+      if (slot === 0) { pg = pdf.addPage([W, H]); text(pg, `${c.containerNo} - photos`, M, H - M - 10, 11, bold, navy); }
+      const a = photos[i], col = slot % COLS, row = Math.floor(slot / COLS);
+      const x0 = M + col * (cw + GAP), yTop = H - M - 30 - row * (ch + CAP + GAP);
+      try {
+        const img = await pdf.embedJpg(await photoJpegBytes(a)), sc = Math.min(cw / img.width, ch / img.height), iw = img.width * sc, ih = img.height * sc;
+        pg.drawRectangle({ x: x0, y: yTop - ch, width: cw, height: ch, color: rgb(0.96, 0.965, 0.97) });
+        pg.drawImage(img, { x: x0 + (cw - iw) / 2, y: yTop - ch + (ch - ih) / 2, width: iw, height: ih });
+      } catch (e) {
+        pg.drawRectangle({ x: x0, y: yTop - ch, width: cw, height: ch, borderColor: line, borderWidth: 1 });
+        text(pg, 'Photo could not be loaded', x0 + 10, yTop - ch / 2, 10, font, muted, cw - 20);
+      }
+      const by = S.profiles.get(a.by), byName = by ? (by.full_name || by.username || by.email) : '';
+      text(pg, `Photo ${i + 1} of ${photos.length}  -  ${fmtDT(a.at)}`, x0, yTop - ch - 12, 9, bold, ink, cw);
+      text(pg, [byName, a.stage ? (ST[a.stage] || a.stage) : ''].filter(Boolean).join('  -  '), x0, yTop - ch - 23, 8.5, font, muted, cw);
+    }
+    // ---- page numbers
+    const pages = pdf.getPages();
+    pages.forEach((p, i) => p.drawText(pdfSafe(`${c.containerNo}  -  page ${i + 1} of ${pages.length}`), { x: M, y: 18, size: 8, font, color: muted }));
+    const bytes = await pdf.save();
+    const d = new Date(); saveBlob(`Photo_Report_${c.containerNo}_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}.pdf`, new Blob([bytes], { type: 'application/pdf' }));
+    await log('Photo report generated', c, `${photos.length} photo${photos.length > 1 ? 's' : ''}`);
+    toast(`Photo report for ${c.containerNo} downloaded (${photos.length} photo${photos.length > 1 ? 's' : ''}, ${fsize(bytes.length)}).`, 'ok');
+  } catch (e) { toast('Could not make the report: ' + (e.message || errMsg(e)), 'bad'); }
+  finally { S.repBusy = null; scheduleRender(); }
 }
 
 /* ---------- job actions (server enforces FIFO and roles) ---------- */
@@ -881,6 +990,7 @@ document.addEventListener('click', e => {
     full: () => { S.full = !S.full; document.body.classList.toggle('inv-full', S.full); render(); },
     release: async () => { try { await must(sb.rpc('set_hold', { p_id: id, p_hold: false, p_reason: '' })); toast('Hold released. The container is back in the queue at its FIFO place.', 'ok'); } catch (err) { toast(errMsg(err), 'bad'); } },
     att: () => { S.attFor = id; S.attBusy = ''; S.attDel = null; S.viewer = null; render(); loadThumbs(id); setTimeout(() => $('#att-close')?.focus({ preventScroll: true })); },
+    report: () => photoReport(id),
     'att-close': closeSheet, 'viewer-close': () => { S.viewer = null; render(); },
     'att-view': () => viewAtt(aid),
     'att-dl': async () => { const a = S.atts.get(aid); if (a) try { location.href = await signed(a, true); } catch (err) { toast(errMsg(err), 'bad'); } },
@@ -962,6 +1072,7 @@ document.addEventListener('change', async e => {
   else if (t.dataset.sel) { t.checked ? S.sel.add(t.dataset.sel) : S.sel.delete(t.dataset.sel); S.bulkDel = false; render(); }
   else if (t.dataset.selAll) { S.gridKeys.filter(x => x[0] === 'c').forEach(x => t.checked ? S.sel.add(x.slice(2)) : S.sel.delete(x.slice(2))); S.bulkDel = false; render(); }
   else if (t.id === 'att-cam' || t.id === 'att-files') { const fs = [...t.files]; t.value = ''; addFiles(S.attFor, fs); }
+  else if (t.dataset.quick) { const fs = [...t.files]; t.value = ''; addFiles(t.dataset.quick, fs); }
   else if (t.dataset.fk) { const set = S.f[t.dataset.fk]; t.checked ? set.add(t.value) : set.delete(t.value); render(); }
   else if (t.dataset.fd) { S.f[t.dataset.fd] = t.value; render(); }
   else if (t.dataset.vis) { try { await must(sb.from('attachments').update({ customer_visible: t.checked }).eq('id', t.dataset.vis)); const a = S.atts.get(t.dataset.vis); if (a) a.customer_visible = t.checked; toast(t.checked ? 'Shared with the customer.' : 'Hidden from the customer.', 'ok'); } catch (err) { t.checked = !t.checked; toast(errMsg(err), 'bad'); } }

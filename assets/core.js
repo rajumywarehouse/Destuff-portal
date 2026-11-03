@@ -87,6 +87,7 @@ function saveWorkbook(name, wb) {
 }
 const brandSvg = '<svg width="34" height="26" viewBox="0 0 34 26" aria-hidden="true"><rect x="1" y="3" width="32" height="20" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7 7v12M12 7v12M17 7v12M22 7v12M27 7v12" stroke="currentColor" stroke-width="1.6" opacity=".55"/><rect x="1" y="3" width="32" height="4" fill="currentColor" opacity=".15"/></svg>';
 const lockIcon = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="5.5" width="8" height="5.5" rx="1" fill="currentColor"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+const camIcon = '<svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5.5h2.2l1.2-1.8h4.2l1.2 1.8h2.2a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="9.3" r="2.4" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
 const clipIcon = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M8.5 3.5 4.3 7.7a1 1 0 0 0 1.4 1.4l4.5-4.5a2 2 0 0 0-2.8-2.8L2.8 6.3a3 3 0 0 0 4.2 4.2L10.5 7" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
 function meChip(p) {
   const n = p.full_name || p.email || 'You', ini = n.split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase();
