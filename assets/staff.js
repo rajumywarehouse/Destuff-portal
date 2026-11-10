@@ -423,10 +423,11 @@ function vInv() {
     <div class="sec-head"><div><h2>Container inventory</h2><p>A container joins the destuffing queue as soon as its CFS gate-in date and time is filled in. Blank gate-in means it has not reached the CFS yet. The customer code decides which customer sees the container on their portal.</p></div></div>
     <div class="toolbar">
       <div class="grow"><input type="search" id="inv-q" placeholder="Search container, customer, vessel, consol, IGM, item…" value="${esc(S.q)}" aria-label="Search inventory"></div>
-      ${can.inv() ? `<button class="btn" data-act="add-rows">+ 5 rows</button><label class="btn file-btn">Upload Excel / CSV<input type="file" id="inv-file" accept=".xlsx,.xls,.csv"></label>` : ''}
+      ${can.inv() ? `<button class="btn" data-act="add-rows">+ 5 rows</button><label class="btn file-btn">Upload Excel / CSV<input type="file" id="inv-file" accept=".xlsx,.xls,.csv"></label><label class="btn file-btn" title="Choose the GateIn- Loaded Container and/or JO Pendency Excel files downloaded from the ERP">Import from ERP<input type="file" id="erp-file" accept=".xlsx,.xls,.csv" multiple></label>` : ''}
       <button class="btn" data-act="template">Download template</button><button class="btn" data-act="export-inv">Export this view</button><button class="btn" data-act="full" aria-pressed="${!!S.full}">${S.full ? 'Exit full screen' : 'Full screen'}</button>
       ${can.admin() ? (hasSample ? `<button class="btn ghost" data-act="sample-clear">Clear sample data</button>` : `<button class="btn ghost" data-act="sample-load">Load sample data</button>`) : ''}
     </div>
+    ${S.erpNote ? `<div class="note info" role="status" style="display:flex;gap:12px;justify-content:space-between;align-items:flex-start"><div>${S.erpNote}</div><button class="btn sm ghost" data-act="erp-note-close">Close</button></div>` : ''}
     ${pc ? `<div class="unsaved-banner" role="status"><span><b>${pc} row${pc > 1 ? 's are' : ' is'} not saved yet.</b> Other users and devices will not see ${pc > 1 ? 'them' : 'it'} until you click Save changes.</span><button class="btn primary" data-act="save">Save changes</button></div>` : ''}
     ${vFilters(keys.filter(k => k[0] === 'c').length, pc)}
     ${vBulkBar()}
@@ -594,6 +595,87 @@ async function onUpload(file) {
       + (arrLocked.length ? ` Gate-in already saved for ${arrLocked.length} container${arrLocked.length > 1 ? 's' : ''} (${arrLocked.slice(0, 3).join(', ')}${arrLocked.length > 3 ? '…' : ''}); only a superadmin can change it.` : '')
       + (skipped - arrLocked.length > 0 ? ` ${skipped - arrLocked.length} values on started containers were skipped.` : ''), bad || arrLocked.length ? 'bad' : 'ok');
   } catch (e) { toast('Could not read that file: ' + (e.message || e), 'bad'); }
+}
+/* ---- Import from ERP (CFSMag): the user downloads the reports from the ERP and picks the files here.
+   The files are read in this browser and only staged in the grid; nothing is saved until "Save changes". ---- */
+const ERP_HOURS = 72;
+const ERP_ALIAS = [['TOOREDR','TOORDER'],['TOORDER','TOORDER'],['FREIGHTSYSTEM','FSL'],['FREIGHTSYSYTEM','FSL'],['CARGOCONSOLIDATORS','CCI'],['TOTALTRANSPORT','TOTAL'],['UNITEDFREIGHT','UNITED'],['MACNELS','MACNELS'],['GLOBALVISION','GLOBALVISION'],['HDD','HDDSOLUTIONS'],['INDEV','INDEVINFRA']];
+function erpCustomer(imp) {
+  const k = String(imp || '').toUpperCase().replace(/[^A-Z]/g, ''); if (!k) return '';
+  for (const [a, c] of ERP_ALIAS) if (k.includes(a) && S.customers.has(c)) return c;
+  const cands = [...S.customers.values()].map(c => ({ code: c.code, keys: [c.code, String(c.name || '').toUpperCase().replace(/[^A-Z]/g, '')].filter(x => x.length >= 3) }));
+  let best = '', len = 0;
+  const words = String(imp).toUpperCase().split(/[^A-Z]+/);
+  for (const c of cands) for (const key of c.keys) if ((key.length >= 4 ? k.includes(key) : words.includes(key)) && key.length > len) { best = c.code; len = key.length; }
+  return best;
+}
+const colIdx = L => L.split('').reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+function erpParse(rows) {
+  const hi = rows.findIndex(r => r.some(x => /^(container no|cont_no)$/i.test(String(x).trim())));
+  if (hi < 0) return null;
+  const H = rows[hi].map(h => String(h).trim().toUpperCase()), find = (names, fb) => { for (const n of names) { const i = H.indexOf(n); if (i >= 0) return i; } return fb == null ? -1 : colIdx(fb); };
+  const body = rows.slice(hi + 1).filter(r => r.some(x => String(x).trim()));
+  if (H.includes('CONT_NO')) { // JO Pendency: allocated, not gated in yet
+    const c = { no: find(['CONT_NO']), size: find(['CONT_SIZE']), type: find(['CONT_TYPE']), imp: find(['IGM IMPORTER']), ves: find(['VESSEL_NAME']), lin: find(['LINE']), port: find(['PORT_CODE']), igm: find(['IGM_NO']), item: find(['ITEM_NO']), mode: find(['FCL_LCL_MODE']) };
+    return { kind: 'jo', name: 'JO Pendency', total: body.length, rows: body.filter(r => /^L/i.test(String(r[c.mode]).trim())).map(r => ({ r, c })) };
+  }
+  const c = { arr: find(['ARRIVAL DATE'], 'B'), no: find(['CONTAINER NO'], 'J'), size: find(['SIZE'], 'K'), type: find(['TYPE'], 'M'), imp: find(['IMPORTER'], 'Y'), ves: find(['VESSEL NAME'], 'AC'), lin: find(['LINER'], 'V'), port: find(['TERMINAL / PORT', 'TERMINAL/PORT'], 'AB'), igm: find(['IGM NO'], 'R'), item: find(['ITEM NO'], 'S'), mode: find(['CONS'], 'U') };
+  return { kind: 'gate', name: 'GateIn- Loaded Container', total: body.length, rows: body.filter(r => String(r[c.mode]).trim().toUpperCase() === 'LCL').map(r => ({ r, c })) };
+}
+async function erpImport(files) {
+  if (!files.length) return; if (!window.XLSX) { toast('The spreadsheet reader is still loading. Try again in a moment.', 'bad'); return; }
+  const reps = [];
+  for (const f of files) {
+    try {
+      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array', cellDates: true });
+      let rep = null; for (const n of wb.SheetNames) { rep = erpParse(XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' })); if (rep) break; }
+      if (!rep) { toast(`${f.name}: this does not look like the GateIn- Loaded Container or JO Pendency report.`, 'bad'); return; }
+      rep.file = f.name; reps.push(rep);
+    } catch (e) { toast(`Could not read ${f.name}: ${e.message || e}`, 'bad'); return; }
+  }
+  reps.sort((a, b) => (a.kind === 'gate' ? 0 : 1) - (b.kind === 'gate' ? 0 : 1)); // gate-in first, so a container in both gets its gate-in
+  const since = Date.now() - ERP_HOURS * 36e5, seen = new Set(), cand = [];
+  let old = 0, badNo = 0;
+  for (const rep of reps) for (const { r, c } of rep.rows) {
+    const no = normalize('containerNo', r[c.no]); if (!/^[A-Z]{4}\d{7}$/.test(no)) { badNo++; continue; }
+    if (seen.has(no)) continue;
+    let arr = '';
+    if (rep.kind === 'gate') { arr = parseDT(r[c.arr]) || ''; if (!arr || ms(arr) < since) { old++; continue; } }
+    seen.add(no);
+    const imp = String(r[c.imp] ?? '').trim(), cust = erpCustomer(imp);
+    cand.push({ no, arr, src: rep.kind, imp, cust, v: { containerNo: no, size: normalize('size', r[c.size]), customer: cust, consol: cust, vessel: String(r[c.ves] ?? '').trim(), liner: String(r[c.lin] ?? '').trim(), port: String(r[c.port] ?? '').trim(), igmNo: String(r[c.igm] ?? '').trim(), item: String(r[c.item] ?? '').trim(), cfsArrival: arr } });
+  }
+  // what the portal already has for these numbers (including older completed jobs not loaded on this page)
+  const db = new Map();
+  try { const nos = cand.map(x => x.no); for (let i = 0; i < nos.length; i += 200) (await must(sb.from('containers').select('id,container_no,status,cfs_arrival').in('container_no', nos.slice(i, i + 200)))).forEach(x => { const a = db.get(x.container_no) || []; a.push(x); db.set(x.container_no, a); }); }
+  catch (e) { toast('Could not check the portal for existing containers: ' + errMsg(e), 'bad'); return; }
+  const out = { add: [], gate: [], same: [], wait: [], running: [], done: [], locked: [] }, noCust = [];
+  S.newRows = S.newRows.filter(k => !rowBlank(k));
+  for (const x of cand) {
+    const recs = db.get(x.no) || [], active = recs.find(r => r.status === 'awaiting' || r.status === 'queued');
+    if (!active) {
+      if (recs.some(r => r.status === 'in_progress')) { out.running.push(x.no); continue; }
+      if (recs.length) { out.done.push(x.no); continue; }
+      const key = newRow(); for (const [k, v] of Object.entries(x.v)) if (v) setEdit(key, k, v);
+      out.add.push(x.no + (x.arr ? '' : ' (awaiting gate-in)')); if (!x.cust) noCust.push(`${x.no} (${x.imp || 'no importer'})`); continue;
+    }
+    if (!x.arr) { out.wait.push(x.no); continue; }
+    const c = S.containers.get(active.id); if (!c) { out.locked.push(x.no); continue; }
+    if (c.cfsArrival && ms(c.cfsArrival) === ms(x.arr)) { out.same.push(x.no); continue; }
+    const key = 'c:' + c.id; if (cellLocked(key, 'cfsArrival')) { out.locked.push(x.no); continue; }
+    setEdit(key, 'cfsArrival', x.arr); out.gate.push(`${x.no} (${c.cfsArrival ? fmtDT(c.cfsArrival) + ' → ' : ''}${fmtDT(x.arr)})`);
+  }
+  const list = (a, n = 12) => a.length ? `: ${esc(a.slice(0, n).join(', '))}${a.length > n ? ` and ${a.length - n} more` : ''}` : '';
+  const src = reps.map(r => `${esc(r.name)}: ${r.rows.length} LCL of ${r.total} rows`).join(' · ');
+  S.erpNote = `<b>ERP import, not saved yet.</b> ${src}. Gate-ins older than ${ERP_HOURS} hours skipped: ${old}.${badNo ? ` Rows without a valid container number: ${badNo}.` : ''}
+    <ul style="margin:6px 0 0 18px;padding:0">
+    <li><b>New containers to add: ${out.add.length}</b>${list(out.add)}</li>
+    <li><b>Gate-in to fill in or update: ${out.gate.length}</b>${list(out.gate, 8)}</li>
+    <li>Already in Inventory with the same gate-in: ${out.same.length}; still awaiting gate-in: ${out.wait.length}</li>
+    <li>Ignored, already completed: ${out.done.length}; ignored, destuffing running: ${out.running.length}${out.locked.length ? `; gate-in locked (superadmin only): ${out.locked.length}${list(out.locked)}` : ''}</li>
+    ${noCust.length ? `<li class="iss bad">Importer not found in the customer master, Customer left blank: ${noCust.length}${list(noCust, 6)}</li>` : ''}</ul>
+    ${out.add.length || out.gate.length ? 'Check the yellow cells, then click <b>Save changes</b>. Nothing reaches the portal until you do.' : 'Nothing to change.'}`;
+  S.f.unsaved = !!(out.add.length || out.gate.length); S.tab = 'inv'; render();
 }
 function downloadTemplate() {
   if (!window.XLSX) return saveWorkbook();
@@ -981,7 +1063,7 @@ document.addEventListener('click', e => {
     'add-rows': () => { for (let i = 0; i < 5; i++) newRow(); render(); },
     save: saveGrid, discard: () => { S.edits = {}; S.newRows = []; S.f.unsaved = false; render(); },
     del: () => { S.confirmDel = b.dataset.key; render(); }, 'del-no': () => { S.confirmDel = null; render(); }, 'del-yes': () => deleteRow(b.dataset.key),
-    template: downloadTemplate, 'export-inv': exportInv, 'export-done': exportDone, 'sample-load': loadSample, 'sample-clear': clearSample,
+    template: downloadTemplate, 'erp-note-close': () => { S.erpNote = ''; render(); }, 'export-inv': exportInv, 'export-done': exportDone, 'sample-load': loadSample, 'sample-clear': clearSample,
     'run-all': () => { S.runAll = !S.runAll; render(); },
     'bulk-del': () => { S.bulkDel = true; render(); }, 'bulk-del-no': () => { S.bulkDel = false; render(); }, 'bulk-del-yes': bulkDelete,
     'sel-clear': () => { S.sel.clear(); S.bulkDel = false; render(); },
@@ -1069,6 +1151,7 @@ document.addEventListener('change', async e => {
   if (t.id === 'viewas') { S.viewAs = t.value || null; S.open = null; if (S.tab === 'team' && !can.admin()) S.tab = 'dash'; render(); }
   else if (t.id === 'done-range') { S.doneRange = t.value; render(); }
   else if (t.id === 'inv-file' || t.id === 'post-file') { onUpload(t.files[0]); t.value = ''; }
+  else if (t.id === 'erp-file') { erpImport([...t.files]); t.value = ''; }
   else if (t.dataset.sel) { t.checked ? S.sel.add(t.dataset.sel) : S.sel.delete(t.dataset.sel); S.bulkDel = false; render(); }
   else if (t.dataset.selAll) { S.gridKeys.filter(x => x[0] === 'c').forEach(x => t.checked ? S.sel.add(x.slice(2)) : S.sel.delete(x.slice(2))); S.bulkDel = false; render(); }
   else if (t.id === 'att-cam' || t.id === 'att-files') { const fs = [...t.files]; t.value = ''; addFiles(S.attFor, fs); }
