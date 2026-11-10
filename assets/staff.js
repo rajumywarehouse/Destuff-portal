@@ -187,9 +187,9 @@ function render() {
   $('#hdr-right').innerHTML = vHeader(); $('#tabs').innerHTML = vTabs();
   $('#custlist').innerHTML = [...S.customers.values()].map(c => `<option value="${esc(c.code)}">${esc(c.name)}</option>`).join('');
   if (!S.loaded) return;
-  const v = { dash: vDash, inv: vInv, queue: vQueue, post: vPost, done: vDone, audit: vAudit, team: vTeam }[S.tab] || vDash;
+  const v = { dash: vDash, inv: vInv, queue: vQueue, post: vPost, done: vDone, icd: vIcd, audit: vAudit, team: vTeam }[S.tab] || vDash;
   $('#main').innerHTML = v();
-  $('#sheet').innerHTML = vSheet(); document.body.style.overflow = S.attFor ? 'hidden' : '';
+  $('#sheet').innerHTML = vSheet(); document.body.style.overflow = S.attFor || (S.tab === 'icd' && IC.sheet) ? 'hidden' : '';
   const ngw = $('.grid-wrap'); if (ngw && gs) { ngw.scrollLeft = gs[0]; ngw.scrollTop = gs[1]; }
   if (fid) { const el = document.getElementById(fid); if (el && el !== document.activeElement) { el.focus({ preventScroll: true }); try { if (sel) el.setSelectionRange(sel[0], sel[1]); } catch (e) {} } }
   tick();
@@ -204,7 +204,7 @@ function vHeader() {
 function vTabs() {
   const q = fifo().length, rn = running().length, pend = [...S.profiles.values()].filter(p => p.role === 'pending').length;
   const pc = pendingCount();
-  const t = [['dash','Dashboard',rn ? `<span class="ct hot">${rn} live</span>` : ''],['inv','Inventory',pc ? `<span class="ct hot">${pc} unsaved</span>` : ''],['queue','Job queue',q ? `<span class="ct">${q}</span>` : ''],['post','After destuffing',(() => { const n = [...S.containers.values()].filter(c => c.status === 'completed' && !c.gateOut).length; return n ? `<span class="ct">${n}</span>` : ''; })()],['done','Completed',''],['audit','Audit log','']];
+  const t = [['dash','Dashboard',rn ? `<span class="ct hot">${rn} live</span>` : ''],['inv','Inventory',pc ? `<span class="ct hot">${pc} unsaved</span>` : ''],['queue','Job queue',q ? `<span class="ct">${q}</span>` : ''],['post','After destuffing',(() => { const n = [...S.containers.values()].filter(c => c.status === 'completed' && !c.gateOut).length; return n ? `<span class="ct">${n}</span>` : ''; })()],['done','Completed',''],['icd','ICD',(() => { const n = icdPending(); return n ? `<span class="ct hot">${n} unsaved</span>` : ''; })()],['audit','Audit log','']];
   if (can.admin()) t.push(['team','Users & customers', pend ? `<span class="ct hot">${pend} new</span>` : '']);
   return t.map(([k, l, c]) => `<button class="tab" data-tab="${k}" ${S.tab === k ? 'aria-current="page"' : ''}>${l}${c}</button>`).join('');
 }
@@ -1130,7 +1130,7 @@ document.addEventListener('submit', async e => {
 });
 document.addEventListener('input', e => {
   if (!active()) return; const t = e.target;
-  if (t.matches('.grid input:not([type=checkbox])')) {
+  if (t.matches('.grid:not(.icd-grid) input:not([type=checkbox])')) {
     const key = t.dataset.key, k = t.dataset.col; let v = t.value;
     if (k === 'containerNo' || k === 'customer') { const up = k === 'containerNo' ? v.toUpperCase().replace(/\s/g, '') : v.toUpperCase(); if (up !== v) { const p = t.selectionStart; t.value = up; try { t.setSelectionRange(p, p); } catch (x) {} } v = up.trim(); }
     const wasBlank = key[0] === 'n' && rowBlank(key);
@@ -1180,14 +1180,14 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && S.attFor) { if (S.viewer) { S.viewer = null; render(); } else closeSheet(); return; }
   if (e.key === 'Escape' && S.full && !t.matches?.('.grid input:not([type=checkbox])')) { S.full = false; document.body.classList.remove('inv-full'); render(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && (S.tab === 'inv' || S.tab === 'post')) { e.preventDefault(); saveGrid(); return; }
-  if (!t.matches?.('.grid input:not([type=checkbox])')) return;
+  if (!t.matches?.('.grid:not(.icd-grid) input:not([type=checkbox])')) return;
   const dir = (e.key === 'ArrowDown' || (e.key === 'Enter' && !e.shiftKey)) ? 1 : (e.key === 'ArrowUp' || (e.key === 'Enter' && e.shiftKey)) ? -1 : 0;
   if (!dir || (t.type !== 'text' && e.key.startsWith('Arrow'))) return;
   e.preventDefault(); const keys = S.gridKeys; let i = keys.indexOf(t.dataset.key) + dir;
   while (i >= 0 && i < keys.length) { const el = document.getElementById(cellId(keys[i], t.dataset.col)); if (el && !el.disabled) { el.focus(); try { el.select(); } catch (x) {} return; } i += dir; }
 });
 document.addEventListener('paste', e => {
-  if (!active()) return; const t = e.target.closest?.('.grid input:not([type=checkbox])'); if (!t) return;
+  if (!active()) return; const t = e.target.closest?.('.grid:not(.icd-grid) input:not([type=checkbox])'); if (!t) return;
   const txt = (e.clipboardData?.getData('text/plain') || '').replace(/\r/g, '');
   if (!/[\t\n]/.test(txt.replace(/\n+$/, ''))) return;
   e.preventDefault(); const rows = txt.split('\n'); while (rows.length && !rows[rows.length - 1].trim()) rows.pop();
@@ -1199,11 +1199,214 @@ document.addEventListener('dragleave', e => { const d = e.target.closest?.('#att
 document.addEventListener('drop', e => { if (!active()) return; const d = e.target.closest?.('#att-drop'); if (!d) return; e.preventDefault(); d.classList.remove('over'); addFiles(S.attFor, [...(e.dataTransfer?.files || [])]); });
 window.addEventListener('beforeunload', e => { if (active() && pendingCount()) { e.preventDefault(); e.returnValue = ''; } });
 
+/* ---------- ICD page: its own sheet (Container no, Truck no, Size, Destination, Stuffing date, Packages, Remarks) with photos per row.
+   Separate tables (icd_rows, icd_photos); nothing here touches the inventory, queue or jobs. ---------- */
+const ICOLS = [
+  { k: 'container_no', label: 'Container No.', w: 140, ph: 'MSCU1234566' },
+  { k: 'truck_no', label: 'Truck No.', w: 130, ph: 'TN04AB1234' },
+  { k: 'size', label: 'Size', w: 80, list: 'sizes' },
+  { k: 'destination', label: 'Destination', w: 160 },
+  { k: 'stuffing_date', label: 'Stuffing date', w: 150, type: 'date' },
+  { k: 'packages', label: 'Packages', w: 100, type: 'number' },
+  { k: 'remarks', label: 'Remarks', w: 240 },
+];
+const IC = { rows: new Map(), photos: new Map(), loaded: false, err: '', edits: {}, newKeys: [], n: 0, q: '', busy: false, up: {}, sheet: null, viewer: null, del: null, pdel: null, ch: null };
+const icdCanEdit = () => canAttach();
+const icdCanDel = r => icdCanEdit() && (can.admin() || r.created_by === S.uid);
+const icdPhotosOf = id => [...IC.photos.values()].filter(p => p.row_id === id).sort((a, b) => ms(a.at) - ms(b.at));
+const icdPending = () => Object.keys(IC.edits).filter(k => Object.keys(IC.edits[k]).length && !(k[0] === 'n' && icdBlank(k))).length;
+function icdBlank(key) { const e = IC.edits[key] || {}; return !ICOLS.some(c => String(e[c.k] ?? '').trim()); }
+function icdVal(key, k) { const e = IC.edits[key]; if (e && k in e) return e[k]; const r = key[0] === 'r' ? IC.rows.get(key.slice(2)) : null; return r ? (r[k] ?? '') : ''; }
+function icdNorm(k, v) {
+  v = v == null ? '' : String(v);
+  if (k === 'container_no') return v.toUpperCase().replace(/[\s-]/g, '');
+  if (k === 'truck_no') return v.toUpperCase().replace(/\s+/g, '');
+  if (k === 'size') { const s = v.toUpperCase().replace(/['’"\s]|FT|FEET/g, ''); return /^40(HC|HQ|H)$/.test(s) ? '40HC' : s; }
+  if (k === 'packages') return v.replace(/[^\d]/g, '');
+  return v;
+}
+async function icdLoad() {
+  try {
+    const [rows, ph] = await Promise.all([
+      fetchAll(() => sb.from('icd_rows').select('*').order('seq', { ascending: false })),
+      fetchAll(() => sb.from('icd_photos').select('id,row_id,name,type,size,path,by,at').order('at')),
+    ]);
+    IC.rows = new Map(rows.map(r => [r.id, r])); IC.photos = new Map(ph.map(p => [p.id, p])); IC.loaded = true; IC.err = '';
+  } catch (e) { IC.err = /relation|does not exist|schema cache/i.test(errMsg(e)) ? 'The ICD page is not set up in the database yet.' : errMsg(e); }
+  scheduleRender();
+}
+function icdStart() {
+  if (IC.started) return; IC.started = true; icdLoad();
+  IC.ch = sb.channel('cfs-icd')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'icd_rows' }, p => { if (p.eventType === 'DELETE') IC.rows.delete(p.old.id); else IC.rows.set(p.new.id, p.new); if (S?.tab === 'icd') scheduleRender(); })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'icd_photos' }, p => { if (p.eventType === 'DELETE') IC.photos.delete(p.old.id); else { const { thumb, ...rest } = p.new; IC.photos.set(p.new.id, rest); if (thumb) S.thumbs['i' + p.new.id] = thumb; } if (S?.tab === 'icd') scheduleRender(); })
+    .subscribe(st => { if (st === 'SUBSCRIBED' && IC.loaded) icdLoad(); });
+}
+function icdNewRows(n) { for (let i = 0; i < n; i++) { const k = 'n:' + (++IC.n); IC.newKeys.unshift(k); IC.edits[k] = {}; } }
+function icdIssues(key) {
+  if (key[0] === 'n' && icdBlank(key)) return [];
+  const out = [], no = icdVal(key, 'container_no');
+  if (!no) out.push('Container No. is required');
+  else if (iso6346(no) === 'format') out.push('Container No. should be 4 letters + 7 digits');
+  else if (iso6346(no) === 'check') out.push('check digit does not match (please re-check the number)');
+  return out;
+}
+function vIcd() {
+  icdStart();
+  if (IC.err) return `<section class="panel"><div class="note">${esc(IC.err)}</div></section>`;
+  if (!IC.loaded) return '<div class="skel">Loading ICD sheet…</div>';
+  const q = IC.q.trim().toUpperCase(), ed = icdCanEdit(), pc = icdPending();
+  let rows = [...IC.rows.values()].sort((a, b) => b.seq - a.seq);
+  if (q) rows = rows.filter(r => ICOLS.some(c => String(r[c.k] ?? '').toUpperCase().includes(q)) || fmtD(r.stuffing_date).toUpperCase().includes(q));
+  const keys = [...(ed ? IC.newKeys : []), ...rows.map(r => 'r:' + r.id)];
+  const body = keys.map((key, i) => {
+    const r = key[0] === 'r' ? IC.rows.get(key.slice(2)) : null, e = IC.edits[key] || {}, iss = icdIssues(key);
+    const cells = ICOLS.map(c => { const v = icdVal(key, c.k), dirty = c.k in e && String(e[c.k]) !== String(r?.[c.k] ?? '');
+      return `<td class="${dirty ? 'dirty' : ''}"><input id="ic-${esc(key)}-${c.k}" data-icell="${esc(key)}" data-k="${c.k}" value="${esc(v)}" ${c.type ? `type="${c.type}"` : ''} ${c.type === 'number' ? 'min="0" inputmode="numeric"' : ''} ${c.list ? `list="${c.list}"` : ''} ${c.ph && !r ? `placeholder="${c.ph}"` : ''} ${ed ? '' : 'readonly'} aria-label="${esc(c.label)} row ${i + 1}" autocomplete="off" spellcheck="false"></td>`; }).join('');
+    const n = r ? icdPhotosOf(r.id).length : 0, busy = r && IC.up[r.id];
+    const photo = r ? `<div class="icd-ph">${n ? `<button type="button" class="clip has" data-iact="photos" data-id="${esc(r.id)}" aria-label="View ${n} photos">${camIcon}${n}</button>` : ''}${ed ? `<label class="btn sm file-btn" title="Take or choose photos">${n ? '+' : camIcon + ' Add'}<input type="file" accept="image/*" multiple data-iphoto="${esc(r.id)}"></label>` : (n ? '' : '<span class="muted">—</span>')}${busy ? `<span class="muted">${esc(busy)}</span>` : ''}</div>`
+      : `<span class="muted" title="Save the row first">Save first</span>`;
+    const act = IC.del === key ? `<button class="btn sm danger" data-iact="del-yes" data-key="${esc(key)}">Delete</button><button class="btn sm ghost" data-iact="del-no">Keep</button>`
+      : (key[0] === 'n' || (r && icdCanDel(r))) ? `<button class="btn sm ghost" data-iact="del" data-key="${esc(key)}" aria-label="Delete row">✕</button>` : '';
+    return `<tr class="${iss.length ? 'err' : ''}" title="${esc(iss.join('; '))}"><td class="rn">${key[0] === 'n' ? '<span class="pill st-queued">New</span>' : rows.length - rows.findIndex(x => x.id === r.id)}</td>${cells}<td>${photo}</td><td class="act">${act}</td></tr>`;
+  }).join('');
+  return `<section class="panel"><div class="sec-head"><div><h2>ICD</h2><p>Containers sent to the ICD: truck, destination, stuffing date and packages, with photos for each row. This sheet is separate from the inventory and the job queue.</p></div></div>
+    <div class="toolbar"><div class="grow"><input type="search" id="icd-q" placeholder="Search container, truck, destination, remarks…" value="${esc(IC.q)}" aria-label="Search ICD sheet"></div>
+      ${ed ? '<button class="btn" data-iact="add">+ 5 rows</button>' : ''}<button class="btn" data-iact="export">Export Excel</button></div>
+    ${pc ? `<div class="unsaved-banner" role="status"><span><b>${pc} row${pc > 1 ? 's are' : ' is'} not saved yet.</b> Other users will not see ${pc > 1 ? 'them' : 'it'} until you save.</span><span class="actions"><button class="btn primary" data-iact="save" ${IC.busy ? 'disabled' : ''}>${IC.busy ? 'Saving…' : 'Save changes'}</button><button class="btn ghost" data-iact="discard">Discard</button></span></div>` : ''}
+    ${keys.length ? `<div class="grid-wrap icd-wrap"><table class="grid icd-grid"><thead><tr><th class="rn">#</th>${ICOLS.map(c => `<th style="min-width:${c.w}px">${c.label}</th>`).join('')}<th style="min-width:120px">Photos</th><th></th></tr></thead><tbody>${body}</tbody></table></div>`
+      : `<div class="empty"><b>${q ? 'No rows match your search.' : 'No ICD containers yet.'}</b>${ed && !q ? '<span>Click <b>+ 5 rows</b> to start.</span>' : ''}</div>`}
+    <p class="hint">${rows.length} saved row${rows.length === 1 ? '' : 's'}${q ? ' match' : ''}. Newest first. Photos are compressed before upload; add them after the row is saved.</p>
+  </section>${vIcdSheet()}`;
+}
+function vIcdSheet() {
+  const r = IC.sheet && IC.rows.get(IC.sheet); if (!r) return '';
+  const list = icdPhotosOf(r.id); let body;
+  if (IC.viewer) { const p = IC.photos.get(IC.viewer.id);
+    body = `<div class="viewer"><img src="${esc(IC.viewer.url)}" alt="${esc(p?.name || 'Photo')}"><div class="actions"><button type="button" class="btn" data-iact="viewer-close">Back to all photos</button><span class="muted">${esc(p?.name || '')} · ${fsize(p?.size)}</span></div></div>`;
+  } else {
+    body = (icdCanEdit() ? `<div class="drop"><div class="actions"><label class="btn primary file-btn">Take photo<input type="file" accept="image/*" capture="environment" data-iphoto="${esc(r.id)}"></label><label class="btn file-btn">Choose photos<input type="file" accept="image/*" multiple data-iphoto="${esc(r.id)}"></label></div>${IC.up[r.id] ? `<span class="hint">${esc(IC.up[r.id])}</span>` : ''}</div>` : '')
+      + (list.length ? `<div class="tiles">${list.map(p => { const th = S.thumbs['i' + p.id]; return `<div class="tile"><button type="button" class="th" data-iact="view" data-pid="${esc(p.id)}" aria-label="Open ${esc(p.name)}">${th ? `<img src="${esc(th)}" alt="">` : 'Photo'}</button>
+          <div class="tb"><span class="nm" title="${esc(p.name)}">${esc(p.name)}</span><span class="muted">${fsize(p.size)} · ${fmtT(p.at)}</span><span class="muted">${who(p.by)}</span></div>
+          <div class="ta">${IC.pdel === p.id ? `<button type="button" class="btn sm danger" data-iact="pdel-yes" data-pid="${esc(p.id)}">Delete</button><button type="button" class="btn sm ghost" data-iact="pdel-no">Keep</button>` : (icdCanEdit() && (can.admin() || can.inv() || p.by === S.uid) ? `<button type="button" class="btn sm ghost" data-iact="pdel" data-pid="${esc(p.id)}">Delete</button>` : '')}</div></div>`; }).join('')}</div>`
+      : '<div class="empty"><b>No photos yet.</b></div>');
+  }
+  return `<div class="sheet" id="icd-sheet-bg"><div class="sheet-in" role="dialog" aria-modal="true" aria-labelledby="icd-sheet-h">
+    <div class="sheet-h"><div style="display:grid;gap:6px;min-width:0"><h2 id="icd-sheet-h">ICD photos · ${list.length}</h2><div class="q-line"><span class="cno">${cnoHtml(r.container_no)}</span><span class="muted">${esc(r.truck_no || '')} · ${esc(r.destination || '')} · ${r.stuffing_date ? fmtD(r.stuffing_date) : ''}</span></div></div><button type="button" class="btn ghost" data-iact="sheet-close">Close</button></div>
+    ${body}</div></div>`;
+}
+async function icdThumbs(id) {
+  const need = icdPhotosOf(id).filter(p => !(('i' + p.id) in S.thumbs)); if (!need.length) return;
+  try { (await must(sb.from('icd_photos').select('id,thumb').in('id', need.map(p => p.id)))).forEach(x => S.thumbs['i' + x.id] = x.thumb || ''); } catch (e) {}
+  scheduleRender();
+}
+async function icdSave() {
+  if (IC.busy) return;
+  const keys = Object.keys(IC.edits).filter(k => Object.keys(IC.edits[k]).length && !(k[0] === 'n' && icdBlank(k)));
+  const errs = keys.flatMap(k => icdIssues(k).filter(x => !/check digit/.test(x)).map(x => `${icdVal(k, 'container_no') || 'A row'}: ${x}`));
+  if (errs.length) { toast(errs[0] + (errs.length > 1 ? ` (+${errs.length - 1} more)` : ''), 'bad'); return; }
+  IC.busy = true; render(); let added = 0, updated = 0; const failed = [];
+  const dbv = (k, v) => k === 'packages' ? (v === '' ? null : +v) : k === 'stuffing_date' ? (v || null) : String(v ?? '').trim();
+  for (const key of keys) {
+    const e = IC.edits[key], body = {}; for (const [k, v] of Object.entries(e)) body[k] = dbv(k, v);
+    try {
+      if (key[0] === 'n') { const row = await must(sb.from('icd_rows').insert(body).select().single()); IC.rows.set(row.id, row); added++; IC.newKeys = IC.newKeys.filter(x => x !== key); }
+      else { const row = await must(sb.from('icd_rows').update(body).eq('id', key.slice(2)).select().single()); IC.rows.set(row.id, row); updated++; }
+      delete IC.edits[key];
+    } catch (err) { failed.push(`${icdVal(key, 'container_no') || 'Row'}: ${errMsg(err)}`); }
+  }
+  IC.newKeys = IC.newKeys.filter(k => !icdBlank(k)); Object.keys(IC.edits).forEach(k => { if (k[0] === 'n' && !IC.newKeys.includes(k)) delete IC.edits[k]; });
+  if (added || updated) await log('ICD sheet saved', null, `${added} added, ${updated} updated`);
+  IC.busy = false;
+  if (failed.length) toast(`Saved ${added + updated}. Not saved: ${failed[0]}${failed.length > 1 ? ` (+${failed.length - 1} more)` : ''}`, 'bad'); else toast(`Saved: ${added} added, ${updated} updated.`, 'ok');
+  render();
+}
+async function icdDelete(key) {
+  IC.del = null;
+  if (key[0] === 'n') { delete IC.edits[key]; IC.newKeys = IC.newKeys.filter(x => x !== key); render(); return; }
+  const r = IC.rows.get(key.slice(2)); if (!r) return;
+  try {
+    const paths = icdPhotosOf(r.id).map(p => p.path);
+    await must(sb.from('icd_rows').delete().eq('id', r.id));
+    if (paths.length) await sb.storage.from('attachments').remove(paths);
+    IC.rows.delete(r.id); delete IC.edits[key]; await log('ICD row deleted', { containerNo: r.container_no }, r.truck_no || ''); toast(`Deleted ${r.container_no || 'the row'}.`, 'ok');
+  } catch (e) { toast(errMsg(e), 'bad'); }
+  render();
+}
+async function icdAddPhotos(id, files) {
+  const r = IC.rows.get(id); if (!r || !icdCanEdit() || !files?.length) return;
+  let ok = 0, before = 0, after = 0;
+  for (const [n, f] of [...files].entries()) {
+    if (!/^image\//.test(f.type) || /svg/.test(f.type)) { toast(`${f.name}: only photos can be added here.`, 'bad'); continue; }
+    IC.up[id] = `Uploading ${n + 1} of ${files.length}…`; scheduleRender();
+    try {
+      const { blob, thumb } = await compressPhoto(f), name = (f.name || `photo-${n + 1}`).replace(/\.[^.]+$/, '') + '.jpg';
+      const path = `icd/${id}/${crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + n}-${name.replace(/[^\w.\-]+/g, '_').slice(-80)}`;
+      await must(sb.storage.from('attachments').upload(path, blob, { contentType: 'image/jpeg', upsert: false }));
+      try { const row = await must(sb.from('icd_photos').insert({ row_id: id, name, type: 'image/jpeg', size: blob.size, path, thumb }).select('id,row_id,name,type,size,path,by,at').single()); IC.photos.set(row.id, row); S.thumbs['i' + row.id] = thumb; }
+      catch (e) { await sb.storage.from('attachments').remove([path]); throw e; }
+      ok++; before += f.size; after += blob.size;
+    } catch (e) { toast(`${f.name}: ${e?.message ? errMsg(e) : 'this photo format cannot be read here. Use JPG or PNG.'}`, 'bad'); }
+  }
+  delete IC.up[id]; scheduleRender();
+  if (ok) { await log('ICD photos added', { containerNo: r.container_no }, `${ok} photo${ok > 1 ? 's' : ''}`); toast(`Added ${ok} photo${ok > 1 ? 's' : ''} to ${r.container_no || 'the row'}${before > after * 1.2 ? ` (compressed ${fsize(before)} → ${fsize(after)})` : ''}.`, 'ok'); }
+}
+function icdExport() {
+  if (!window.XLSX) { toast('The spreadsheet tool is still loading. Try again in a moment.', 'bad'); return; }
+  const rows = [...IC.rows.values()].sort((a, b) => a.seq - b.seq);
+  const aoa = [[...ICOLS.map(c => c.label), 'Photos', 'Entered by', 'Last updated'], ...rows.map(r => [r.container_no, r.truck_no, r.size, r.destination, r.stuffing_date ? fmtD(r.stuffing_date) : '', r.packages ?? '', r.remarks, icdPhotosOf(r.id).length, (S.profiles.get(r.created_by)?.full_name || ''), fmtDT(r.updated_at)])];
+  const wb = XLSX.utils.book_new(), ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = aoa[0].map((h, i) => ({ wch: i === 6 ? 40 : 18 })); XLSX.utils.book_append_sheet(wb, ws, 'ICD');
+  XLSX.writeFile(wb, `ICD-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+const icdOn = () => active() && S.tab === 'icd';
+document.addEventListener('input', e => {
+  if (!icdOn()) return; const t = e.target;
+  if (t.id === 'icd-q') { IC.q = t.value; scheduleRender(); return; }
+  const key = t.dataset.icell; if (!key || !icdCanEdit()) return;
+  const k = t.dataset.k, before = icdPending(), r = key[0] === 'r' ? IC.rows.get(key.slice(2)) : null;
+  let v = t.type === 'date' ? t.value : icdNorm(k, t.value);
+  if (t.type !== 'date' && v !== t.value) { const p = t.selectionStart; t.value = v; try { t.setSelectionRange(p, p); } catch (er) {} }
+  IC.edits[key] = IC.edits[key] || {};
+  if (r && String(r[k] ?? '') === String(v)) delete IC.edits[key][k]; else IC.edits[key][k] = v;
+  if (key[0] === 'r' && !Object.keys(IC.edits[key]).length) delete IC.edits[key];
+  t.closest('td')?.classList.toggle('dirty', !!(IC.edits[key] && k in IC.edits[key]));
+  if (icdPending() !== before) scheduleRender();
+});
+document.addEventListener('change', e => { if (!icdOn()) return; const t = e.target; if (t.dataset.iphoto) { icdAddPhotos(t.dataset.iphoto, [...t.files]); t.value = ''; } });
+document.addEventListener('click', async e => {
+  if (!icdOn()) return;
+  if (e.target.id === 'icd-sheet-bg') { IC.sheet = null; IC.viewer = null; render(); return; }
+  const b = e.target.closest('[data-iact]'); if (!b) return; const a = b.dataset.iact;
+  if (a === 'add') { icdNewRows(5); render(); document.querySelector('[data-icell]')?.focus(); }
+  else if (a === 'save') icdSave();
+  else if (a === 'discard') { IC.edits = {}; IC.newKeys = []; render(); }
+  else if (a === 'export') icdExport();
+  else if (a === 'del') { IC.del = b.dataset.key; render(); }
+  else if (a === 'del-no') { IC.del = null; render(); }
+  else if (a === 'del-yes') icdDelete(b.dataset.key);
+  else if (a === 'photos') { IC.sheet = b.dataset.id; IC.viewer = null; IC.pdel = null; render(); icdThumbs(b.dataset.id); }
+  else if (a === 'sheet-close') { IC.sheet = null; IC.viewer = null; render(); }
+  else if (a === 'viewer-close') { IC.viewer = null; render(); }
+  else if (a === 'view') { const p = IC.photos.get(b.dataset.pid); if (!p) return; try { const { data, error } = await sb.storage.from('attachments').createSignedUrl(p.path, 600); if (error) throw error; IC.viewer = { id: p.id, url: data.signedUrl }; render(); } catch (er) { toast(errMsg(er), 'bad'); } }
+  else if (a === 'pdel') { IC.pdel = b.dataset.pid; render(); }
+  else if (a === 'pdel-no') { IC.pdel = null; render(); }
+  else if (a === 'pdel-yes') { const p = IC.photos.get(b.dataset.pid); IC.pdel = null; if (!p) return; try { await must(sb.from('icd_photos').delete().eq('id', p.id)); await sb.storage.from('attachments').remove([p.path]); IC.photos.delete(p.id); await log('ICD photo deleted', { containerNo: IC.rows.get(p.row_id)?.container_no || '' }, p.name); } catch (er) { toast(errMsg(er), 'bad'); } render(); }
+});
+document.addEventListener('keydown', e => {
+  if (!icdOn()) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); icdSave(); return; }
+  if (e.key === 'Escape' && IC.sheet) { if (IC.viewer) IC.viewer = null; else IC.sheet = null; render(); return; }
+  const t = e.target; if (!t.dataset?.icell || !['Enter', 'ArrowDown', 'ArrowUp'].includes(e.key) || ((t.type === 'number' || t.type === 'date') && e.key !== 'Enter')) return;
+  const all = [...document.querySelectorAll(`[data-icell][data-k="${t.dataset.k}"]`)], i = all.indexOf(t), nx = all[i + (e.key === 'ArrowUp' ? -1 : 1)];
+  if (nx) { e.preventDefault(); nx.focus(); }
+});
+window.addEventListener('beforeunload', e => { if (S && icdPending()) { e.preventDefault(); e.returnValue = ''; } });
+
 return {
   start(profile) {
     if (S && S.uid === profile.id && S.ch) { S.me = profile; render(); return; }
     fresh(profile); shell(); subscribe(); S.setTimer = setInterval(() => { if (S && !document.hidden) loadSettings(); }, 60000);
   },
-  stop() { if (S?.setTimer) clearInterval(S.setTimer); if (S?.ch) sb.removeChannel(S.ch); document.body.classList.remove('inv-full'); S = null; },
+  stop() { if (S?.setTimer) clearInterval(S.setTimer); if (S?.ch) sb.removeChannel(S.ch); if (IC.ch) sb.removeChannel(IC.ch); Object.assign(IC, { rows: new Map(), photos: new Map(), loaded: false, started: false, err: '', edits: {}, newKeys: [], q: '', up: {}, sheet: null, viewer: null, del: null, pdel: null, ch: null }); document.body.classList.remove('inv-full'); S = null; },
 };
 })();

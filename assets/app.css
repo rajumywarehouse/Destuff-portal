@@ -390,3 +390,8 @@ body.inv-full{overflow:hidden}
 .photo-bar{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin-top:2px}
 .photo-bar .photo-add{background:var(--primary-soft);color:var(--primary);border-color:var(--primary)}
 .up-busy{font-size:12px;color:var(--primary);font-weight:600}
+/* ICD sheet */
+.icd-grid td .icd-ph{display:flex;align-items:center;gap:6px;padding:0 6px;white-space:nowrap}
+.icd-grid td .icd-ph .file-btn{height:26px;position:relative;overflow:hidden}
+.icd-grid input[type=date]{min-width:140px}
+.icd-grid input[readonly]{cursor:default}
