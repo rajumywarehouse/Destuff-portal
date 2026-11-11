@@ -254,7 +254,7 @@ function vDash() {
 const photoCount = cid => attsOf(cid).filter(isImg).length;
 function photoBar(c) {
   const n = photoCount(c.id), busy = S.upBusy?.[c.id];
-  return `<div class="photo-bar">${canAttach() ? `<label class="btn sm file-btn photo-add">${camIcon} Add photos<input type="file" id="qp-${esc(c.id)}" data-quick="${esc(c.id)}" multiple accept="image/*"></label>` : ''}
+  return `<div class="photo-bar">${canAttach() ? `<button type="button" class="btn sm photo-add" data-pick="photos" data-cid="${esc(c.id)}">${camIcon} Add photos</button>` : ''}
     <button type="button" class="btn sm ghost" data-act="att" data-id="${esc(c.id)}">${n ? `View ${n} photo${n > 1 ? 's' : ''}` : 'No photos yet'}</button>
     ${n ? `<button type="button" class="btn sm ghost" data-act="report" data-id="${esc(c.id)}" ${S.repBusy === c.id ? 'disabled' : ''}>${S.repBusy === c.id ? 'Making PDF…' : 'Photo report (PDF)'}</button>` : ''}
     ${busy ? `<span class="up-busy" role="status">${esc(busy)}</span>` : ''}</div>`;
@@ -869,6 +869,22 @@ function drawScaled(img, max) {
 }
 const canvasJpeg = (cv, q) => new Promise(r => cv.toBlob(r, 'image/jpeg', q));
 /* Photos are stored as compressed JPEGs (max 1600 px, quality 72) plus a 240 px thumbnail */
+/* One permanent file picker for all photo/file buttons. It lives outside the parts of the page that are redrawn,
+   so files chosen on a phone (where the picker can take a while and the page reloads on return) always arrive. */
+const PHOTO_EXT = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif'];
+const PICK = (() => { const el = document.createElement('input'); el.type = 'file'; el.id = 'cfs-picker'; el.tabIndex = -1; el.setAttribute('aria-hidden', 'true');
+  el.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0'; document.body.appendChild(el);
+  el.addEventListener('change', () => { const cid = el.dataset.cid, fs = [...(el.files || [])]; el.value = ''; if (!S || !cid || !fs.length) return;
+    S.upBusy = S.upBusy || {}; S.upBusy[cid] = `Reading ${fs.length} ${fs.length > 1 ? 'files' : 'file'}…`; if (S.attFor === cid) S.attBusy = S.upBusy[cid]; scheduleRender(); addFiles(cid, fs); });
+  return el; })();
+function openPicker(kind, cid) {
+  if (!cid || !canAttach()) return;
+  PICK.value = ''; PICK.dataset.cid = cid; PICK.multiple = kind !== 'camera';
+  PICK.accept = kind === 'files' ? '.pdf,.docx,.xlsx,.pptx,.csv,.txt,.zip,application/pdf' : 'image/*';
+  if (kind === 'camera') PICK.setAttribute('capture', 'environment'); else PICK.removeAttribute('capture');
+  PICK.click();
+}
+document.addEventListener('click', e => { const b = e.target.closest?.('[data-pick]'); if (!b || !S) return; e.preventDefault(); openPicker(b.dataset.pick, b.dataset.cid); });
 async function compressPhoto(file) {
   const img = await decodeImage(file);
   let blob = await canvasJpeg(drawScaled(img, PHOTO_MAX), PHOTO_Q);
@@ -883,7 +899,7 @@ async function addFiles(cid, files) {
   const done = []; let before = 0, after = 0; S.upBusy = S.upBusy || {};
   const setBusy = t => { S.attBusy = S.attFor === cid ? t : ''; if (t) S.upBusy[cid] = t; else delete S.upBusy[cid]; scheduleRender(); };
   for (const [n, f] of [...files].entries()) {
-    const ext = (f.name.split('.').pop() || '').toLowerCase(), img = /^image\//.test(f.type) && !/svg/.test(f.type);
+    const ext = (f.name.split('.').pop() || '').toLowerCase(), img = (/^image\//.test(f.type) && !/svg/.test(f.type)) || (!f.type && PHOTO_EXT.includes(ext));
     let blob = f, type = f.type, name = f.name || `photo-${n + 1}.jpg`, thumb = null;
     setBusy(`Uploading ${n + 1} of ${files.length}…`);
     try {
@@ -896,7 +912,7 @@ async function addFiles(cid, files) {
       try { const row = await must(sb.from('attachments').insert({ container_id: cid, container_no: c.containerNo, name, type, size: blob.size, path, thumb, stage: c.status }).select().single()); S.atts.set(row.id, attFrom(row)); if (thumb) S.thumbs[row.id] = thumb; recount(); }
       catch (e) { await sb.storage.from('attachments').remove([path]); throw e; }
       done.push(name); before += f.size; after += blob.size;
-    } catch (e) { toast(img && !e?.message ? `${f.name}: this photo format cannot be read here. Use JPG or PNG.` : `${f.name}: ${errMsg(e)}`, 'bad'); }
+    } catch (e) { toast(img && !e?.message ? (/^(heic|heif)$/.test(ext) || /hei[cf]/.test(f.type) ? `${f.name}: this phone's browser cannot read HEIC photos. Set the camera to save JPG, or add it from a laptop.` : `${f.name}: this photo could not be read. Use JPG or PNG.`) : `${f.name}: ${errMsg(e)}`, 'bad'); }
   }
   setBusy('');
   if (done.length) {
@@ -927,7 +943,7 @@ function vSheet() {
   if (S.viewer) { const a = S.atts.get(S.viewer.id);
     body = `<div class="viewer"><img src="${esc(S.viewer.url)}" alt="${esc(a?.name || 'Photo')}"><div class="actions"><button type="button" class="btn" data-act="viewer-close">Back to all files</button><button type="button" class="btn" data-act="att-dl" data-aid="${esc(S.viewer.id)}">Download</button><span class="muted">${esc(a?.name || '')} · ${fsize(a?.size)}</span></div></div>`;
   } else {
-    body = (canAttach() ? `<div class="drop" id="att-drop"><div class="actions"><label class="btn primary file-btn">Take photo<input type="file" id="att-cam" accept="image/*" capture="environment"></label><label class="btn file-btn">Choose photos or files<input type="file" id="att-files" multiple accept="image/*,.pdf,.docx,.xlsx,.pptx,.csv,.txt,.zip"></label></div><span class="hint">Add as many as you need, at any time; several people can add photos to the same container. Photos are compressed (max 1600 px) before upload; other files up to 10 MB. Tick "Customer can see" to share a file on the customer portal.</span></div>` : `<p class="hint">${lockIcon} Your role can view attachments but not add them.</p>`)
+    body = (canAttach() ? `<div class="drop" id="att-drop"><div class="actions"><button type="button" class="btn primary" data-pick="camera" data-cid="${esc(S.attFor)}">Take photo</button><button type="button" class="btn" data-pick="photos" data-cid="${esc(S.attFor)}">Choose photos</button><button type="button" class="btn" data-pick="files" data-cid="${esc(S.attFor)}">Attach files</button></div><span class="hint">Add as many as you need, at any time; several people can add photos to the same container. Photos are compressed (max 1600 px) before upload; other files up to 10 MB. Tick "Customer can see" to share a file on the customer portal.</span></div>` : `<p class="hint">${lockIcon} Your role can view attachments but not add them.</p>`)
       + (S.attBusy ? `<div class="note info">${esc(S.attBusy)}</div>` : '')
       + (list.length ? `<div class="tiles">${list.map(a => { const ext = (a.name.split('.').pop() || 'file').toUpperCase(), th = S.thumbs[a.id];
         return `<div class="tile"><button type="button" class="th" data-act="att-view" data-aid="${esc(a.id)}" aria-label="Open ${esc(a.name)}">${isImg(a) ? (th ? `<img src="${esc(th)}" alt="">` : 'Photo') : esc(ext.slice(0, 5))}</button>
@@ -1154,8 +1170,6 @@ document.addEventListener('change', async e => {
   else if (t.id === 'erp-file') { erpImport([...t.files]); t.value = ''; }
   else if (t.dataset.sel) { t.checked ? S.sel.add(t.dataset.sel) : S.sel.delete(t.dataset.sel); S.bulkDel = false; render(); }
   else if (t.dataset.selAll) { S.gridKeys.filter(x => x[0] === 'c').forEach(x => t.checked ? S.sel.add(x.slice(2)) : S.sel.delete(x.slice(2))); S.bulkDel = false; render(); }
-  else if (t.id === 'att-cam' || t.id === 'att-files') { const fs = [...t.files]; t.value = ''; addFiles(S.attFor, fs); }
-  else if (t.dataset.quick) { const fs = [...t.files]; t.value = ''; addFiles(t.dataset.quick, fs); }
   else if (t.dataset.fk) { const set = S.f[t.dataset.fk]; t.checked ? set.add(t.value) : set.delete(t.value); render(); }
   else if (t.dataset.fd) { S.f[t.dataset.fd] = t.value; render(); }
   else if (t.dataset.vis) { try { await must(sb.from('attachments').update({ customer_visible: t.checked }).eq('id', t.dataset.vis)); const a = S.atts.get(t.dataset.vis); if (a) a.customer_visible = t.checked; toast(t.checked ? 'Shared with the customer.' : 'Hidden from the customer.', 'ok'); } catch (err) { t.checked = !t.checked; toast(errMsg(err), 'bad'); } }
