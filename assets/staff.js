@@ -191,9 +191,16 @@ function render() {
   $('#main').innerHTML = v();
   $('#sheet').innerHTML = vSheet(); document.body.style.overflow = S.attFor ? 'hidden' : '';
   const ngw = $('.grid-wrap'); if (ngw && gs) { ngw.scrollLeft = gs[0]; ngw.scrollTop = gs[1]; }
+  fitDash();
   if (fid) { const el = document.getElementById(fid); if (el && el !== document.activeElement) { el.focus({ preventScroll: true }); try { if (sel) el.setSelectionRange(sel[0], sel[1]); } catch (e) {} } }
   tick();
 }
+function fitDash() {
+  const el = $('.dash-fit'); if (!el) return;
+  if (innerWidth < 900) { el.style.height = ''; return; }
+  el.style.height = Math.max(360, innerHeight - (el.getBoundingClientRect().top + scrollY) - 48) + 'px';
+}
+window.addEventListener('resize', () => { if (S && S.tab === 'dash') fitDash(); });
 function vHeader() {
   const sync = S.live ? '<span class="chip live"><span class="dot"></span>Live</span>' : '<span class="chip demo"><span class="dot"></span>Reconnecting</span>';
   const sel = S.me.role === 'superadmin'
@@ -215,12 +222,8 @@ const custName = code => S.customers.get(code)?.name || code;
 function vDash() {
   const all = [...S.containers.values()], cnt = { awaiting: 0, queued: 0, hold: 0, in_progress: 0, completed: 0 }; all.forEach(c => cnt[dispStatus(c)] != null && cnt[dispStatus(c)]++);
   const t0 = dayStart(), today = all.filter(c => c.status === 'completed' && c.completedAt >= t0);
-  const startedToday = all.filter(c => c.startedAt >= t0 && c.cfsArrival);
-  const avgD = today.length ? today.reduce((s, c) => s + c.durationMs, 0) / today.length : null;
-  const avgW = startedToday.length ? startedToday.reduce((s, c) => s + (c.startedAt - arrMs(c)), 0) / startedToday.length : null;
   const q = fifo(), runs = running(), over = runs.filter(c => Date.now() - c.startedAt > SLA_MIN * 6e4).length;
-  const modeCt = { manual: 0, mechanical: 0, combined: 0 }; [...today, ...runs].forEach(c => c.mode in modeCt && modeCt[c.mode]++); const mt = Object.values(modeCt).reduce((a, b) => a + b, 0);
-  return `
+  return `<div class="dash-fit">
   <section class="pipe" aria-label="Container flow">
     <button class="step s1" data-tab="inv" data-filter="awaiting"><span class="lbl">Awaiting arrival</span><b>${cnt.awaiting}</b></button>
     <button class="step s2" data-tab="queue"><span class="lbl">In job queue</span><b>${cnt.queued}</b>${cnt.hold ? `<small>${cnt.hold} on hold</small>` : ''}</button>
@@ -237,19 +240,7 @@ function vDash() {
       ${q.length ? `<div class="qlist">${q.slice(0, 5).map((c, i) => qCard(c, i, false)).join('')}</div>` : `<div class="empty"><b>The queue is empty.</b><span>Containers join the queue once their CFS arrival date and time is entered in Inventory.</span></div>`}
     </section>
   </div>
-  <section class="panel" aria-labelledby="h-today">
-    <h2 id="h-today">Today's performance</h2>
-    <div class="stats">
-      <div class="stat"><span>Containers destuffed</span><b>${today.length}</b></div>
-      <div class="stat"><span>Average destuffing time</span><b>${avgD != null ? dur(avgD) : '—'}</b></div>
-      <div class="stat"><span>Average wait, arrival to start</span><b>${avgW != null ? dur(avgW) : '—'}</b></div>
-      <div class="stat"><span>Over ${SLA_MIN / 60} h target</span><b>${today.filter(c => c.durationMs > SLA_MIN * 6e4).length}</b></div>
-    </div>
-    <div style="display:grid;gap:6px"><span class="fl">Destuffing mode, today (completed + running)</span>
-      <div class="split" role="img" aria-label="Mode split">${mt ? Object.entries(modeCt).map(([k, v], i) => v ? `<i style="width:${v / mt * 100}%;background:var(--m${i + 1})"></i>` : '').join('') : ''}</div>
-      <div class="legend">${Object.entries(modeCt).map(([k, v], i) => `<span style="--c:var(--m${i + 1})">${MODES[k]} · ${v}</span>`).join('')}</div>
-    </div>
-  </section>`;
+  </div>`;
 }
 const photoCount = cid => attsOf(cid).filter(isImg).length;
 function photoBar(c) {
@@ -936,19 +927,33 @@ async function deleteAtt(id) {
   await must(sb.from('attachments').delete().eq('id', id)); await sb.storage.from('attachments').remove([a.path]);
   S.atts.delete(id); recount(); await log('Photo/file deleted', { containerNo: a.container_no, id: a.cid }, a.name);
 }
-function closeSheet() { S.viewer = null; S.attFor = null; S.attDel = null; render(); }
+function closeSheet() { S.viewer = null; S.attFor = null; S.attDel = null; S.attSel = new Set(); S.attBulk = false; render(); }
+function vAttBulk(list) {
+  const sel = S.attSel || new Set(), n = list.filter(a => sel.has(a.id)).length, photos = list.filter(isImg).length;
+  if (S.attBulk && n) return `<div class="note" role="alert" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between"><span><b>Delete ${n} file${n > 1 ? 's' : ''} permanently?</b> This cannot be undone.</span><span class="actions"><button type="button" class="btn danger" data-act="asel-del-yes" ${S.busy ? 'disabled' : ''}>${S.busy ? 'Deleting…' : `Delete ${n}`}</button><button type="button" class="btn ghost" data-act="asel-del-no">Cancel</button></span></div>`;
+  return `<div class="actions" style="flex-wrap:wrap;gap:8px;align-items:center"><span class="muted">Superadmin:</span>
+    ${photos ? `<button type="button" class="btn sm" data-act="asel-photos">Select all photos (${photos})</button>` : ''}<button type="button" class="btn sm" data-act="asel-all">Select all (${list.length})</button>${n ? `<button type="button" class="btn sm ghost" data-act="asel-none">Clear</button><button type="button" class="btn sm danger" data-act="asel-del">Delete selected (${n})</button>` : ''}</div>`;
+}
+async function deleteSelectedAtts() {
+  const ids = [...(S.attSel || [])].filter(id => S.atts.has(id)); if (!ids.length || !can.admin()) return;
+  S.busy = true; render(); let ok = 0; const bad = [];
+  for (const id of ids) { try { await deleteAtt(id); ok++; S.attSel.delete(id); } catch (e) { bad.push(errMsg(e)); } }
+  S.busy = false; S.attBulk = false;
+  toast(bad.length ? `Deleted ${ok}. ${bad.length} could not be deleted: ${bad[0]}` : `Deleted ${ok} file${ok > 1 ? 's' : ''}.`, bad.length ? 'bad' : 'ok'); render();
+}
 function vSheet() {
   if (!S.attFor) return ''; const c = S.containers.get(S.attFor); if (!c) { S.attFor = null; return ''; }
   const list = attsOf(c.id); let body;
   if (S.viewer) { const a = S.atts.get(S.viewer.id);
-    body = `<div class="viewer"><img src="${esc(S.viewer.url)}" alt="${esc(a?.name || 'Photo')}"><div class="actions"><button type="button" class="btn" data-act="viewer-close">Back to all files</button><button type="button" class="btn" data-act="att-dl" data-aid="${esc(S.viewer.id)}">Download</button><span class="muted">${esc(a?.name || '')} · ${fsize(a?.size)}</span></div></div>`;
+    body = `<div class="viewer"><img src="${esc(S.viewer.url)}" alt="${esc(a?.name || 'Photo')}"><div class="actions"><button type="button" class="btn" data-act="viewer-close">Back to all files</button><button type="button" class="btn" data-act="att-dl" data-aid="${esc(S.viewer.id)}">Download</button>${a && canDelAtt(a) ? (S.attDel === a.id ? `<button type="button" class="btn danger" data-act="att-del-yes" data-aid="${esc(a.id)}">Delete permanently</button><button type="button" class="btn ghost" data-act="att-del-no">Keep</button>` : `<button type="button" class="btn ghost" data-act="att-del" data-aid="${esc(a.id)}">Delete</button>`) : ''}<span class="muted">${esc(a?.name || '')} · ${fsize(a?.size)}</span></div></div>`;
   } else {
     body = (canAttach() ? `<div class="drop" id="att-drop"><div class="actions"><button type="button" class="btn primary" data-pick="camera" data-cid="${esc(S.attFor)}">Take photo</button><button type="button" class="btn" data-pick="photos" data-cid="${esc(S.attFor)}">Choose photos</button><button type="button" class="btn" data-pick="files" data-cid="${esc(S.attFor)}">Attach files</button></div><span class="hint">Add as many as you need, at any time; several people can add photos to the same container. Photos are compressed (max 1600 px) before upload; other files up to 10 MB. Tick "Customer can see" to share a file on the customer portal.</span></div>` : `<p class="hint">${lockIcon} Your role can view attachments but not add them.</p>`)
       + (S.attBusy ? `<div class="note info">${esc(S.attBusy)}</div>` : '')
+      + (list.length && can.admin() ? vAttBulk(list) : '')
       + (list.length ? `<div class="tiles">${list.map(a => { const ext = (a.name.split('.').pop() || 'file').toUpperCase(), th = S.thumbs[a.id];
         return `<div class="tile"><button type="button" class="th" data-act="att-view" data-aid="${esc(a.id)}" aria-label="Open ${esc(a.name)}">${isImg(a) ? (th ? `<img src="${esc(th)}" alt="">` : 'Photo') : esc(ext.slice(0, 5))}</button>
           <div class="tb"><span class="nm" title="${esc(a.name)}">${esc(a.name)}</span><span class="muted">${fsize(a.size)} · ${fmtT(a.at)}</span><span class="muted">${who(a.by)}${a.stage ? ' · ' + (ST[a.stage] || '') : ''}</span>
-          <label class="vis"><input type="checkbox" id="vis-${esc(a.id)}" data-vis="${esc(a.id)}" ${a.customer_visible ? 'checked' : ''} ${canAttach() ? '' : 'disabled'}>Customer can see</label></div>
+          <label class="vis"><input type="checkbox" id="vis-${esc(a.id)}" data-vis="${esc(a.id)}" ${a.customer_visible ? 'checked' : ''} ${canAttach() ? '' : 'disabled'}>Customer can see</label>${can.admin() ? `<label class="vis"><input type="checkbox" id="asel-${esc(a.id)}" data-asel="${esc(a.id)}" ${S.attSel?.has(a.id) ? 'checked' : ''}>Select to delete</label>` : ''}</div>
           <div class="ta">${S.attDel === a.id ? `<button type="button" class="btn sm danger" data-act="att-del-yes" data-aid="${esc(a.id)}">Delete</button><button type="button" class="btn sm ghost" data-act="att-del-no">Keep</button>` : (isImg(a) ? '' : `<button type="button" class="btn sm" data-act="att-view" data-aid="${esc(a.id)}">Download</button>`) + (canDelAtt(a) ? `<button type="button" class="btn sm ghost" data-act="att-del" data-aid="${esc(a.id)}">Delete</button>` : '')}</div></div>`; }).join('')}</div>`
         : `<div class="empty"><b>No photos or files yet.</b><span>Seal photos, damage, survey reports or tally sheets can be attached at any stage.</span></div>`);
   }
@@ -1087,13 +1092,16 @@ document.addEventListener('click', e => {
     'qq-clear': () => { S.qq = ''; render(); $('#queue-q')?.focus(); },
     full: () => { S.full = !S.full; document.body.classList.toggle('inv-full', S.full); render(); },
     release: async () => { try { await must(sb.rpc('set_hold', { p_id: id, p_hold: false, p_reason: '' })); toast('Hold released. The container is back in the queue at its FIFO place.', 'ok'); } catch (err) { toast(errMsg(err), 'bad'); } },
-    att: () => { S.attFor = id; S.attBusy = ''; S.attDel = null; S.viewer = null; render(); loadThumbs(id); setTimeout(() => $('#att-close')?.focus({ preventScroll: true })); },
+    att: () => { S.attFor = id; S.attBusy = ''; S.attDel = null; S.viewer = null; S.attSel = new Set(); S.attBulk = false; render(); loadThumbs(id); setTimeout(() => $('#att-close')?.focus({ preventScroll: true })); },
     report: () => photoReport(id),
-    'att-close': closeSheet, 'viewer-close': () => { S.viewer = null; render(); },
+    'att-close': closeSheet, 'viewer-close': () => { S.viewer = null; S.attDel = null; render(); },
+    'asel-all': () => { S.attSel = new Set(attsOf(S.attFor).map(a => a.id)); render(); }, 'asel-photos': () => { S.attSel = new Set(attsOf(S.attFor).filter(isImg).map(a => a.id)); render(); },
+    'asel-none': () => { S.attSel = new Set(); S.attBulk = false; render(); }, 'asel-del': () => { S.attBulk = true; render(); }, 'asel-del-no': () => { S.attBulk = false; render(); },
+    'asel-del-yes': () => deleteSelectedAtts(),
     'att-view': () => viewAtt(aid),
     'att-dl': async () => { const a = S.atts.get(aid); if (a) try { location.href = await signed(a, true); } catch (err) { toast(errMsg(err), 'bad'); } },
     'att-del': () => { S.attDel = aid; render(); }, 'att-del-no': () => { S.attDel = null; render(); },
-    'att-del-yes': async () => { S.attDel = null; try { await deleteAtt(aid); toast('Deleted.', 'ok'); render(); } catch (err) { toast(errMsg(err), 'bad'); } },
+    'att-del-yes': async () => { S.attDel = null; if (S.viewer?.id === aid) S.viewer = null; try { await deleteAtt(aid); toast('Deleted.', 'ok'); render(); } catch (err) { toast(errMsg(err), 'bad'); } },
     dd: () => { S.dd = S.dd === k ? null : k; S.ddq = ''; render(); },
     'f-clear': () => { if (k === 'dates') Object.assign(S.f, { arrFrom: '', arrTo: '', pnrFrom: '', pnrTo: '', files: '' }); else S.f[k] = new Set(); render(); },
     'f-all': () => { const q = S.ddq.trim().toLowerCase(); optsFor(k).filter(o => !q || String(o[1]).toLowerCase().includes(q)).forEach(o => S.f[k].add(o[0])); render(); },
@@ -1172,6 +1180,7 @@ document.addEventListener('change', async e => {
   else if (t.dataset.selAll) { S.gridKeys.filter(x => x[0] === 'c').forEach(x => t.checked ? S.sel.add(x.slice(2)) : S.sel.delete(x.slice(2))); S.bulkDel = false; render(); }
   else if (t.dataset.fk) { const set = S.f[t.dataset.fk]; t.checked ? set.add(t.value) : set.delete(t.value); render(); }
   else if (t.dataset.fd) { S.f[t.dataset.fd] = t.value; render(); }
+  else if (t.dataset.asel) { S.attSel = S.attSel || new Set(); if (t.checked) S.attSel.add(t.dataset.asel); else S.attSel.delete(t.dataset.asel); S.attBulk = false; render(); }
   else if (t.dataset.vis) { try { await must(sb.from('attachments').update({ customer_visible: t.checked }).eq('id', t.dataset.vis)); const a = S.atts.get(t.dataset.vis); if (a) a.customer_visible = t.checked; toast(t.checked ? 'Shared with the customer.' : 'Hidden from the customer.', 'ok'); } catch (err) { t.checked = !t.checked; toast(errMsg(err), 'bad'); } }
   else if (t.dataset.roleUid) {
     const uid = t.dataset.roleUid, p = S.profiles.get(uid), patch = { role: t.value }; if (t.value !== 'customer') patch.customer_code = null;

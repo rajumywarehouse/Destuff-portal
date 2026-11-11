@@ -105,7 +105,16 @@ setInterval(tick, 1000);
 
 /* ---------- Supabase + sign-in ---------- */
 const configured = CFG.SUPABASE_URL && !/YOUR-PROJECT/.test(CFG.SUPABASE_URL) && CFG.SUPABASE_ANON_KEY && !/YOUR-ANON/.test(CFG.SUPABASE_ANON_KEY);
-const sb = configured && window.supabase ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY) : null;
+/* Keep the login across page refreshes: an explicit local storage, and no cross-tab lock (on some Android phones the lock
+   from the page being refreshed is still held, and the new page then started signed out). */
+const AUTH_KEY = (() => { try { return 'sb-' + new URL(CFG.SUPABASE_URL).hostname.split('.')[0] + '-auth-token'; } catch (e) { return 'sb-auth-token'; } })();
+const authStore = (() => { const mem = {}; let ok = false; try { localStorage.setItem('cfs-ls-test', '1'); localStorage.removeItem('cfs-ls-test'); ok = true; } catch (e) {}
+  return { getItem: k => { try { return ok ? localStorage.getItem(k) : (mem[k] ?? null); } catch (e) { return mem[k] ?? null; } },
+           setItem: (k, v) => { mem[k] = v; try { if (ok) localStorage.setItem(k, v); } catch (e) {} },
+           removeItem: k => { delete mem[k]; try { if (ok) localStorage.removeItem(k); } catch (e) {} } }; })();
+const authLog = (ev, extra) => { try { const a = JSON.parse(localStorage.getItem('cfs-auth-log') || '[]'); a.push([new Date().toISOString().slice(5, 19), ev, extra || '']); localStorage.setItem('cfs-auth-log', JSON.stringify(a.slice(-30))); } catch (e) {} };
+const sb = configured && window.supabase ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, storage: authStore, storageKey: AUTH_KEY, lock: async (name, timeout, fn) => await fn() } }) : null;
 const APP = { session: null, profile: null, mode: null, authTab: 'in', authMsg: null, recovering: false };
 document.title = CFG.COMPANY_NAME || 'CFS Destuffing Portal';
 
@@ -124,7 +133,7 @@ function vAuth() {
   const body = APP.recovering
     ? `<form data-auth="newpass"><label>New password<input id="a-pass" name="password" type="password" minlength="8" autocomplete="new-password" required></label><button class="btn primary" type="submit">Set new password</button></form>`
     : `<form data-auth="in"><label>User ID<input id="a-user" name="user" autocomplete="username" autocapitalize="none" spellcheck="false" required></label><label>Password<input id="a-pass" name="password" type="password" autocomplete="current-password" required></label><button class="btn primary" type="submit">Sign in</button><p class="hint">Logins are created by the CFS team. Forgot your password? Ask your CFS superadmin to reset it.</p></form>`;
-  return `<div class="auth"><div class="auth-card"><div style="justify-self:end">${themeBtn()}</div>${brand}${msg ? `<div class="note ${msg.kind === 'ok' ? 'ok' : ''}">${esc(msg.text)}</div>` : ''}${body}</div></div>`;
+  return `<div class="auth"><div class="auth-card"><div style="justify-self:end">${themeBtn()}</div>${brand}${msg ? `<div class="note ${msg.kind === 'ok' ? 'ok' : ''}">${esc(msg.text)}</div>` : ''}${body}${/authlog/.test(location.search) ? `<details open><summary class="muted">Sign-in log</summary><pre style="font-size:11px;white-space:pre-wrap">${esc((()=>{ try { return JSON.parse(localStorage.getItem('cfs-auth-log') || '[]').map(x => x.join('  ')).join('\n'); } catch (e) { return ''; } })())}</pre></details>` : ''}</div></div>`;
 }
 function vPending() {
   const p = APP.profile;
@@ -159,7 +168,7 @@ document.addEventListener('click', async e => {
   if (b.dataset.act === 'theme') { const t = THEMES[(THEMES.indexOf(getTheme()) + 1) % THEMES.length]; try { localStorage.setItem('cfs-theme', t); } catch (err) {} applyTheme(t); document.querySelectorAll('[data-act="theme"]').forEach(x => { x.textContent = THEME_LABEL[t]; }); return; }
   if (b.dataset.act === 'chpass') { openChpass(); return; }
   if (b.dataset.act === 'chpass-close') { closeChpass(); return; }
-  if (b.dataset.act === 'signout') { await sb.auth.signOut(); return; }
+  if (b.dataset.act === 'signout') { authLog('sign out clicked'); await sb.auth.signOut(); return; }
   if (b.dataset.act === 'recheck') route();
 });
 document.addEventListener('submit', async e => {
@@ -203,7 +212,12 @@ function closeChpass() { $('#chpass')?.remove(); }
 
 if (sb) {
   let lastUid;
+  let retried = 0;
   sb.auth.onAuthStateChange((event, session) => {
+    authLog(event, session ? 'session' : (authStore.getItem(AUTH_KEY) ? 'none, but saved login present' : 'none'));
+    if (event === 'INITIAL_SESSION' && !session && authStore.getItem(AUTH_KEY) && retried < 2) {   // saved login not read yet: try again before showing the sign-in page
+      retried++; setTimeout(async () => { const { data } = await sb.auth.getSession(); authLog('retry', data?.session ? 'session' : 'none'); APP.session = data?.session || null; lastUid = APP.session?.user?.id || null; route(); }, 600); return;
+    }
     APP.session = session;
     if (event === 'PASSWORD_RECOVERY') APP.recovering = true;
     const uid = session?.user?.id || null;
