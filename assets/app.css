@@ -398,3 +398,16 @@ body.inv-full{overflow:hidden}
   .dash-fit .cols>.panel{min-height:0;overflow:auto;overscroll-behavior:contain;align-content:start}
   .dash-fit .cols>.panel .sec-head{position:sticky;top:-16px;z-index:1;background:var(--surface);margin:-16px -16px 0;padding:16px 16px 8px}
 }
+/* Dashboard: compact tiles for running containers */
+.rtiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(122px,1fr));gap:6px}
+.rtile{display:grid;gap:2px;justify-items:start;text-align:left;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:5px 8px 5px 10px;box-shadow:inset 3px 0 0 var(--live);cursor:pointer;min-width:0}
+.rtile:hover{border-color:var(--live)}
+.rtile:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.rtile.sel{border-color:var(--primary);box-shadow:inset 3px 0 0 var(--primary),0 0 0 1px var(--primary)}
+.rtile.over{box-shadow:inset 3px 0 0 var(--bad)}
+.rtile .rt-no{font-family:var(--f-mono);font-size:12.5px;font-weight:600;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.rtile .rt-clock{font-family:var(--f-mono);font-size:17px;font-weight:500;line-height:1.1;font-variant-numeric:tabular-nums;color:var(--live)}
+.rtile.over .rt-clock{color:var(--bad)}
+.rtile .rt-con{font-size:10.5px;line-height:1.2;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.rt-pick{display:grid;gap:6px;border-top:1px dashed var(--line);padding-top:8px}
+.rt-pick-h{display:flex;justify-content:space-between;align-items:center;gap:8px}

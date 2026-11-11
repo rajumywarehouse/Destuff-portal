@@ -233,7 +233,7 @@ function vDash() {
   <div class="cols">
     <section class="panel" aria-labelledby="h-run">
       <div class="sec-head"><div><h2 id="h-run">Destuffing now</h2><p>Longest-running first. Target ${SLA_MIN / 60} h per container.</p></div>${runs.length ? `<span class="chip">${runs.length} running${over ? ` · ${over} over target` : ''}</span>` : ''}</div>
-      ${runs.length ? `<div class="rlist">${(S.runAll ? runs : runs.slice(0, 5)).map(rRow).join('')}</div>${runs.length > 5 ? `<button class="btn sm more" data-act="run-all">${S.runAll ? 'Show first 5' : `Show all ${runs.length} running`}</button>` : ''}` : `<div class="empty"><b>No container is being destuffed.</b><span>Start the job at position 1 of the queue to begin the clock.</span></div>`}
+      ${runs.length ? vRunTiles(runs) : `<div class="empty"><b>No container is being destuffed.</b><span>Start the job at position 1 of the queue to begin the clock.</span></div>`}
     </section>
     <section class="panel" aria-labelledby="h-next">
       <div class="sec-head"><div><h2 id="h-next">Next in FIFO</h2><p>Ordered by CFS gate-in time. The first ${S.win} can be started at the same time.</p></div><button class="btn sm" data-tab="queue">Full queue (${q.length})</button></div>
@@ -249,6 +249,14 @@ function photoBar(c) {
     <button type="button" class="btn sm ghost" data-act="att" data-id="${esc(c.id)}">${n ? `View ${n} photo${n > 1 ? 's' : ''}` : 'No photos yet'}</button>
     ${n ? `<button type="button" class="btn sm ghost" data-act="report" data-id="${esc(c.id)}" ${S.repBusy === c.id ? 'disabled' : ''}>${S.repBusy === c.id ? 'Making PDF…' : 'Photo report (PDF)'}</button>` : ''}
     ${busy ? `<span class="up-busy" role="status">${esc(busy)}</span>` : ''}</div>`;
+}
+function vRunTiles(runs) {
+  const pick = S.runPick && runs.find(c => c.id === S.runPick);
+  if (S.runPick && !pick) S.runPick = null;
+  return `<div class="rtiles">${runs.map(c => { const el = Date.now() - c.startedAt, con = c.consol || (c.customer ? custName(c.customer) : '');
+    return `<button type="button" class="rtile ${el > SLA_MIN * 6e4 ? 'over' : ''} ${pick && pick.id === c.id ? 'sel' : ''}" data-act="run-pick" data-id="${esc(c.id)}" data-run="${c.startedAt}" aria-label="${esc(c.containerNo)}, running ${esc(clock(el))}${con ? ', ' + esc(con) : ''}. Tap for actions">
+      <span class="rt-no">${cnoHtml(c.containerNo)}</span><span class="rt-clock" data-since="${c.startedAt}" data-fmt="clock">${clock(el)}</span><span class="rt-con">${esc(con || '—')}</span></button>`; }).join('')}</div>
+  ${pick ? `<div class="rt-pick"><div class="rt-pick-h"><span class="muted">Actions for ${esc(pick.containerNo)}</span><button type="button" class="btn sm ghost" data-act="run-pick" data-id="${esc(pick.id)}">Close</button></div>${rRow(pick)}</div>` : '<p class="hint" style="margin:0">Tap a container for photos, Complete or Requeue. Red = over target.</p>'}`;
 }
 function rRow(c) {
   const el = Date.now() - c.startedAt, open = S.open?.id === c.id ? S.open.type : null;
@@ -1086,6 +1094,7 @@ document.addEventListener('click', e => {
     del: () => { S.confirmDel = b.dataset.key; render(); }, 'del-no': () => { S.confirmDel = null; render(); }, 'del-yes': () => deleteRow(b.dataset.key),
     template: downloadTemplate, 'erp-note-close': () => { S.erpNote = ''; render(); }, 'export-inv': exportInv, 'export-done': exportDone, 'sample-load': loadSample, 'sample-clear': clearSample,
     'run-all': () => { S.runAll = !S.runAll; render(); },
+    'run-pick': () => { S.runPick = S.runPick === id ? null : id; if (!S.runPick && S.open) S.open = null; render(); if (S.runPick) setTimeout(() => $('.rt-pick')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })); },
     'bulk-del': () => { S.bulkDel = true; render(); }, 'bulk-del-no': () => { S.bulkDel = false; render(); }, 'bulk-del-yes': bulkDelete,
     'sel-clear': () => { S.sel.clear(); S.bulkDel = false; render(); },
     pf: () => { S.pf = k; render(); }, 'export-post': exportPost,
