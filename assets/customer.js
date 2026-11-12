@@ -133,7 +133,6 @@ async function photoReport(id) {
     const W = 595.28, H = 841.89, M = 36, ink = rgb(0.075, 0.125, 0.17), muted = rgb(0.34, 0.4, 0.46), line = rgb(0.83, 0.86, 0.89), navy = rgb(0.106, 0.302, 0.471);
     const fit = (t, f, size, max) => { t = pdfSafe(t); if (f.widthOfTextAtSize(t, size) <= max) return t; while (t.length > 1 && f.widthOfTextAtSize(t + '...', size) > max) t = t.slice(0, -1); return t + '...'; };
     const text = (pg, t, x, y, size = 10, f = font, color = ink, max = W - 2 * M) => pg.drawText(fit(t, f, size, max), { x, y, size, font: f, color });
-    const wrap = (t, f, size, max) => { const out = []; let cur = ''; for (const w of pdfSafe(t).split(/\s+/)) { const nx = cur ? cur + ' ' + w : w; if (f.widthOfTextAtSize(nx, size) > max && cur) { out.push(cur); cur = w; } else cur = nx; } if (cur) out.push(cur); return out; };
     let pg = pdf.addPage([W, H]), y = H - M;
     text(pg, CFG.COMPANY_NAME || 'CFS Destuffing Portal', M, y - 10, 10, bold, muted); y -= 34;
     text(pg, 'Destuffing photo report', M, y, 20, bold, navy); y -= 30;
@@ -141,14 +140,8 @@ async function photoReport(id) {
     pg.drawLine({ start: { x: M, y }, end: { x: W - M, y }, thickness: 1, color: line }); y -= 22;
     const st = r.disp === 'hold' ? 'On hold' : r.status === 'completed' ? 'Destuffing completed' : r.status === 'in_progress' ? 'Destuffing in progress' : r.status === 'queued' ? 'In the destuffing queue' : 'Not yet arrived';
     const rows = [['Container No.', r.container_no], ['Size', r.size], ['Customer', C.company || C.me.customer_code], ['Consol', r.consol], ['Vessel', r.vessel], ['Liner', r.liner],
-      ['IGM No.', r.igm_no], ['Item', r.item], ['Port', r.port], ['CFS Gate-In', r.arr ? fmtDT(r.arr) : ''], ['Status', st],
-      ['Destuffing started', r.started ? fmtDT(r.started) : ''], ['Destuffing completed', r.completed ? fmtDT(r.completed) : ''], ['Packages', r.packages ?? ''],
-      ['Photos in this report', String(photos.length)], ['Generated', fmtDT(Date.now())]].filter(x => x[1] !== '' && x[1] != null);
+      ['IGM No.', r.igm_no], ['Item', r.item], ['Port', r.port], ['CFS Gate-In', r.arr ? fmtDT(r.arr) : ''], ['Status', st]].filter(x => x[1] !== '' && x[1] != null);
     for (const [k, v] of rows) { text(pg, k, M, y, 10, font, muted, 150); text(pg, String(v), M + 160, y, 11, bold, ink, W - 2 * M - 160); y -= 19; }
-    for (const [k, v] of [['Notes at start', r.start_remarks], ['Notes at completion', r.end_remarks]]) {
-      if (!v) continue; y -= 4; text(pg, k, M, y, 10, font, muted, 150);
-      for (const ln of wrap(v, font, 10.5, W - 2 * M - 160).slice(0, 8)) { text(pg, ln, M + 160, y, 10.5, font, ink, W - 2 * M - 160); y -= 14; } y -= 4;
-    }
     const COLS = 2, ROWS = 2, GAP = 14, CAP = 16, cw = (W - 2 * M - GAP) / COLS, ch = (H - 2 * M - 30 - GAP) / ROWS - CAP;
     for (let i = 0; i < photos.length; i++) {
       const slot = i % (COLS * ROWS); if (slot === 0) { pg = pdf.addPage([W, H]); text(pg, `${r.container_no} - photos`, M, H - M - 10, 11, bold, navy); }
