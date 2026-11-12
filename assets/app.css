@@ -411,3 +411,6 @@ body.inv-full{overflow:hidden}
 .rtile .rt-con{font-size:10.5px;line-height:1.2;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .rt-pick{display:grid;gap:6px;border-top:1px dashed var(--line);padding-top:8px}
 .rt-pick-h{display:flex;justify-content:space-between;align-items:center;gap:8px}
+/* Customer portal: notes from the CFS */
+.cnotes{border-left:3px solid var(--primary);background:var(--surface-2);border-radius:6px;padding:8px 10px;display:grid;gap:4px;font-size:13px}
+.cnotes p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}

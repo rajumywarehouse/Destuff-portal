@@ -66,8 +66,10 @@ function card(r) {
   else head = `<span>Not yet arrived at the CFS. It joins the destuffing queue when it is gated in.</span>`;
   return `<article class="ccard ${esc(r.disp)}">
     <div class="ccard-top"><div class="q-line"><span class="cno">${cnoHtml(r.container_no)}</span><span class="pill st-mode">${esc(r.size || '—')}</span>${pill(r.disp)}${r.my_rank != null && (r.status === 'queued' || r.status === 'awaiting') && r.disp !== 'hold' ? `<span class="pill st-new">Your priority ${r.my_rank}</span>` : ''}</div>
-      ${r.files ? `<button type="button" class="clip has" data-cact="files" data-id="${esc(r.id)}">${clipIcon}${r.files} photo${r.files > 1 ? 's/files' : '/file'}</button>` : ''}</div>
+      ${r.files ? `<button type="button" class="clip has" data-cact="files" data-id="${esc(r.id)}">${r.photos ? camIcon : clipIcon}${r.photos ? `${r.photos} photo${r.photos > 1 ? 's' : ''}${r.files > r.photos ? ` + ${r.files - r.photos} file${r.files - r.photos > 1 ? 's' : ''}` : ''}` : `${r.files} file${r.files > 1 ? 's' : ''}`}</button>` : ''}</div>
     <div class="headline">${head}</div>
+    ${r.photos ? `<div class="photo-bar"><button type="button" class="btn sm" data-cact="files" data-id="${esc(r.id)}">${camIcon} View ${r.photos} photo${r.photos > 1 ? 's' : ''}</button><button type="button" class="btn sm" data-cact="report" data-id="${esc(r.id)}" ${C.repBusy ? 'disabled' : ''}>${C.repBusy === r.id ? 'Making PDF…' : 'Photo report (PDF)'}</button></div>` : ''}
+    ${r.start_remarks || r.end_remarks ? `<div class="cnotes"><b>Notes from the CFS</b>${r.start_remarks ? `<p><span class="muted">At start:</span> ${esc(r.start_remarks)}</p>` : ''}${r.end_remarks ? `<p><span class="muted">At completion:</span> ${esc(r.end_remarks)}</p>` : ''}</div>` : ''}
     <dl class="kv"><div><dt>Vessel</dt><dd>${esc(r.vessel || '—')}</dd></div><div><dt>Liner</dt><dd>${esc(r.liner || '—')}</dd></div><div><dt>IGM No.</dt><dd>${esc(r.igm_no || '—')}</dd></div>
       <div><dt>Item</dt><dd>${esc(r.item || '—')}</dd></div><div><dt>Consol</dt><dd>${esc(r.consol || '—')}</dd></div><div><dt>Port</dt><dd>${esc(r.port || '—')}</dd></div>
       <div><dt>PNR date</dt><dd>${fmtD(r.pnr_date)}</dd></div><div><dt>CFS arrival</dt><dd>${r.arr ? fmtDT(r.arr) : 'Not arrived'}</dd></div></dl>
@@ -101,7 +103,7 @@ function vSheet() {
   else if (!C.files) body = '<div class="skel">Loading…</div>';
   else body = `<div class="tiles">${C.files.map(f => { const img = /^image\//.test(f.type);
     return `<div class="tile"><button type="button" class="th" data-cact="open" data-path="${esc(f.path)}" data-name="${esc(f.name)}" data-img="${img ? 1 : 0}" aria-label="Open ${esc(f.name)}">${img && f.thumb ? `<img src="${esc(f.thumb)}" alt="">` : esc((f.name.split('.').pop() || 'FILE').toUpperCase().slice(0, 5))}</button><div class="tb"><span class="nm" title="${esc(f.name)}">${esc(f.name)}</span><span class="muted">${fsize(f.size)} · ${fmtT(f.at)}</span></div></div>`; }).join('')}</div>`;
-  return `<div class="sheet" id="csheet-bg"><div class="sheet-in" role="dialog" aria-modal="true" aria-labelledby="csheet-h"><div class="sheet-h"><div style="display:grid;gap:6px;min-width:0"><h2 id="csheet-h">Photos &amp; files</h2><div class="q-line"><span class="cno">${cnoHtml(r.container_no)}</span>${pill(r.status)}</div></div><button class="btn ghost" data-cact="close" id="csheet-close">Close</button></div>${body}</div></div>`;
+  return `<div class="sheet" id="csheet-bg"><div class="sheet-in" role="dialog" aria-modal="true" aria-labelledby="csheet-h"><div class="sheet-h"><div style="display:grid;gap:6px;min-width:0"><h2 id="csheet-h">Photos &amp; files</h2><div class="q-line"><span class="cno">${cnoHtml(r.container_no)}</span>${pill(r.status)}</div></div><div class="actions">${C.files && C.files.some(f => /^image\//.test(f.type)) ? `<button class="btn" data-cact="report" data-id="${esc(r.id)}" ${C.repBusy ? 'disabled' : ''}>${C.repBusy === r.id ? 'Making PDF…' : 'Photo report (PDF)'}</button>` : ''}<button class="btn ghost" data-cact="close" id="csheet-close">Close</button></div></div>${body}</div></div>`;
 }
 async function openFiles(id) {
   C.sheet = id; C.files = null; C.fileErr = ''; C.viewer = null; render();
@@ -109,6 +111,64 @@ async function openFiles(id) {
   render(); $('#csheet-close')?.focus({ preventScroll: true });
 }
 async function signedUrl(path, name, download) { const { data, error } = await sb.storage.from('attachments').createSignedUrl(path, 600, download ? { download: name } : undefined); if (error) throw error; return data.signedUrl; }
+/* --- Photo report (PDF), made in the browser from the photos this customer can see --- */
+const PDFLIB_URL = 'https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js';
+let pdfLibLoading = null;
+function loadPdfLib() {
+  if (window.PDFLib) return Promise.resolve(window.PDFLib);
+  return pdfLibLoading || (pdfLibLoading = new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = PDFLIB_URL; sc.async = true;
+    sc.onload = () => window.PDFLib ? res(window.PDFLib) : rej(new Error('PDF tool did not load'));
+    sc.onerror = () => { pdfLibLoading = null; rej(new Error('Could not load the PDF tool. Check the internet connection and try again.')); }; document.head.appendChild(sc); }));
+}
+const pdfSafe = t => String(t ?? '').replace(/[→]/g, '->').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/…/g, '...').replace(/[^\x20-\x7E\xA0-\xFF]/g, '?');
+async function photoReport(id) {
+  const r = C.rows.find(x => x.id === id); if (!r || C.repBusy) return;
+  C.repBusy = id; render();
+  try {
+    const files = await must(sb.rpc('customer_attachments', { p_container: id })), photos = files.filter(f => /^image\/(jpeg|jpg|png)$/i.test(f.type) || /\.(jpe?g|png)$/i.test(f.name));
+    if (!photos.length) { toast('This container has no photos yet.', 'bad'); return; }
+    const { PDFDocument, StandardFonts, rgb } = await loadPdfLib();
+    const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica), bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+    pdf.setTitle(`Photo report ${r.container_no}`); pdf.setCreator(CFG.COMPANY_NAME || 'CFS Destuffing Portal');
+    const W = 595.28, H = 841.89, M = 36, ink = rgb(0.075, 0.125, 0.17), muted = rgb(0.34, 0.4, 0.46), line = rgb(0.83, 0.86, 0.89), navy = rgb(0.106, 0.302, 0.471);
+    const fit = (t, f, size, max) => { t = pdfSafe(t); if (f.widthOfTextAtSize(t, size) <= max) return t; while (t.length > 1 && f.widthOfTextAtSize(t + '...', size) > max) t = t.slice(0, -1); return t + '...'; };
+    const text = (pg, t, x, y, size = 10, f = font, color = ink, max = W - 2 * M) => pg.drawText(fit(t, f, size, max), { x, y, size, font: f, color });
+    const wrap = (t, f, size, max) => { const out = []; let cur = ''; for (const w of pdfSafe(t).split(/\s+/)) { const nx = cur ? cur + ' ' + w : w; if (f.widthOfTextAtSize(nx, size) > max && cur) { out.push(cur); cur = w; } else cur = nx; } if (cur) out.push(cur); return out; };
+    let pg = pdf.addPage([W, H]), y = H - M;
+    text(pg, CFG.COMPANY_NAME || 'CFS Destuffing Portal', M, y - 10, 10, bold, muted); y -= 34;
+    text(pg, 'Destuffing photo report', M, y, 20, bold, navy); y -= 30;
+    text(pg, r.container_no, M, y, 26, bold); y -= 16;
+    pg.drawLine({ start: { x: M, y }, end: { x: W - M, y }, thickness: 1, color: line }); y -= 22;
+    const st = r.disp === 'hold' ? 'On hold' : r.status === 'completed' ? 'Destuffing completed' : r.status === 'in_progress' ? 'Destuffing in progress' : r.status === 'queued' ? 'In the destuffing queue' : 'Not yet arrived';
+    const rows = [['Container No.', r.container_no], ['Size', r.size], ['Customer', C.company || C.me.customer_code], ['Consol', r.consol], ['Vessel', r.vessel], ['Liner', r.liner],
+      ['IGM No.', r.igm_no], ['Item', r.item], ['Port', r.port], ['CFS Gate-In', r.arr ? fmtDT(r.arr) : ''], ['Status', st],
+      ['Destuffing started', r.started ? fmtDT(r.started) : ''], ['Destuffing completed', r.completed ? fmtDT(r.completed) : ''], ['Packages', r.packages ?? ''],
+      ['Photos in this report', String(photos.length)], ['Generated', fmtDT(Date.now())]].filter(x => x[1] !== '' && x[1] != null);
+    for (const [k, v] of rows) { text(pg, k, M, y, 10, font, muted, 150); text(pg, String(v), M + 160, y, 11, bold, ink, W - 2 * M - 160); y -= 19; }
+    for (const [k, v] of [['Notes at start', r.start_remarks], ['Notes at completion', r.end_remarks]]) {
+      if (!v) continue; y -= 4; text(pg, k, M, y, 10, font, muted, 150);
+      for (const ln of wrap(v, font, 10.5, W - 2 * M - 160).slice(0, 8)) { text(pg, ln, M + 160, y, 10.5, font, ink, W - 2 * M - 160); y -= 14; } y -= 4;
+    }
+    const COLS = 2, ROWS = 2, GAP = 14, CAP = 16, cw = (W - 2 * M - GAP) / COLS, ch = (H - 2 * M - 30 - GAP) / ROWS - CAP;
+    for (let i = 0; i < photos.length; i++) {
+      const slot = i % (COLS * ROWS); if (slot === 0) { pg = pdf.addPage([W, H]); text(pg, `${r.container_no} - photos`, M, H - M - 10, 11, bold, navy); }
+      const a = photos[i], x0 = M + (slot % COLS) * (cw + GAP), yTop = H - M - 30 - Math.floor(slot / COLS) * (ch + CAP + GAP);
+      try {
+        const res = await fetch(await signedUrl(a.path, a.name)); if (!res.ok) throw new Error('download');
+        const bytes = new Uint8Array(await res.arrayBuffer()), png = bytes[0] === 0x89 && bytes[1] === 0x50;
+        const img = png ? await pdf.embedPng(bytes) : await pdf.embedJpg(bytes), sc = Math.min(cw / img.width, ch / img.height), iw = img.width * sc, ih = img.height * sc;
+        pg.drawRectangle({ x: x0, y: yTop - ch, width: cw, height: ch, color: rgb(0.96, 0.965, 0.97) });
+        pg.drawImage(img, { x: x0 + (cw - iw) / 2, y: yTop - ch + (ch - ih) / 2, width: iw, height: ih });
+      } catch (e) { pg.drawRectangle({ x: x0, y: yTop - ch, width: cw, height: ch, borderColor: line, borderWidth: 1 }); text(pg, 'Photo could not be loaded', x0 + 10, yTop - ch / 2, 10, font, muted, cw - 20); }
+      text(pg, `Photo ${i + 1} of ${photos.length}  -  ${fmtDT(a.at)}`, x0, yTop - ch - 12, 9, bold, ink, cw);
+    }
+    const pages = pdf.getPages(); pages.forEach((p, i) => p.drawText(pdfSafe(`${r.container_no}  -  page ${i + 1} of ${pages.length}`), { x: M, y: 18, size: 8, font, color: muted }));
+    const out = await pdf.save(), d = new Date();
+    saveBlob(`Photo_Report_${r.container_no}_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}.pdf`, new Blob([out], { type: 'application/pdf' }));
+    toast(`Photo report for ${r.container_no} downloaded (${photos.length} photo${photos.length > 1 ? 's' : ''}).`, 'ok');
+  } catch (e) { toast('Could not make the report: ' + (e.message || errMsg(e)), 'bad'); }
+  finally { C.repBusy = null; render(); }
+}
 function exportXlsx() {
   if (!window.XLSX) return saveWorkbook(); const list = filtered();
   if (!list.length) return toast('Nothing to export in this view.', 'bad');
@@ -135,6 +195,7 @@ document.addEventListener('click', async e => {
     else if (a === 'st') { const s = b.dataset.st; C.st.has(s) ? C.st.delete(s) : C.st.add(s); render(); }
     else if (a === 'st-clear') { C.st.clear(); render(); }
     else if (a === 'files') openFiles(b.dataset.id);
+    else if (a === 'report') photoReport(b.dataset.id);
     else if (a === 'close') { C.sheet = null; C.viewer = null; render(); }
     else if (a === 'viewer-close') { C.viewer = null; render(); }
     else if (a === 'open') { if (b.dataset.img === '1') { C.viewer = { url: await signedUrl(b.dataset.path, b.dataset.name), path: b.dataset.path, name: b.dataset.name }; render(); } else location.href = await signedUrl(b.dataset.path, b.dataset.name, true); }

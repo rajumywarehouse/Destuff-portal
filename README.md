@@ -112,7 +112,7 @@ In the portal, open **Users & customers**.
    | Display screen | The warehouse TV: live jobs, job queue and "check your container", with no customer names |
 
 6. **Inventory:** put the customer code in the **Customer** column of each container (or in the Excel upload). Only containers with that customer's code appear on their portal.
-7. **Photos:** tick **Customer can see** on any file you want to share. Files are private to staff until you tick it.
+7. **Photos and notes:** every photo on a customer's containers is visible to that customer, who can also download the **Photo report (PDF)**. Other files (PDF, Word, Excel…) stay private to staff until you tick **Customer can see**. The Remarks typed when starting and completing a job are shown to the customer as notes.
 
 ## Recommended Supabase settings
 

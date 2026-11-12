@@ -299,14 +299,14 @@ function startForm(c, bypass, i) {
     <div class="fl" id="ml-${esc(c.id)}">Destuffing mode</div>
     <div class="seg" role="radiogroup" aria-labelledby="ml-${esc(c.id)}">${Object.entries(MODES).map(([k, l]) => `<label><input type="radio" name="mode" id="f-mode-${k}" value="${k}" ${S.form.mode === k ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div>
     <div class="row2"><label>Bay / dock<input id="f-bay" name="bay" value="${fv('bay')}" placeholder="e.g. Bay 3"></label><label>Crew size<input id="f-crew" name="crew" type="number" min="0" inputmode="numeric" value="${fv('crew')}"></label></div>
-    <label>Remarks<input id="f-remarks" name="remarks" value="${fv('remarks')}" placeholder="Optional"></label>
+    <label>Remarks <span class="muted">(customer can see)</span><input id="f-remarks" name="remarks" value="${fv('remarks')}" placeholder="Optional"></label>
     ${bypass ? `<label>Reason for bypassing FIFO (required)<textarea id="f-reason" name="reason" required>${fv('reason')}</textarea></label>` : ''}
     <div class="actions"><button type="submit" class="btn primary">Start clock</button><button type="button" class="btn" data-act="att" data-id="${esc(c.id)}">${clipIcon} Add photos (optional)</button><button type="button" class="btn ghost" data-act="cancel">Cancel</button></div>
   </form>`;
 }
 function doneForm(c) {
   return `<form class="jobform" data-form="done" data-id="${esc(c.id)}">
-    <div class="row2"><label>Packages destuffed<input id="f-pkgs" name="pkgs" type="number" min="0" inputmode="numeric" value="${fv('pkgs')}" placeholder="Optional"></label><label>Remarks<input id="f-remarks" name="remarks" value="${fv('remarks')}" placeholder="Optional"></label></div>
+    <div class="row2"><label>Packages destuffed<input id="f-pkgs" name="pkgs" type="number" min="0" inputmode="numeric" value="${fv('pkgs')}" placeholder="Optional"></label><label>Remarks <span class="muted">(customer can see)</span><input id="f-remarks" name="remarks" value="${fv('remarks')}" placeholder="Optional"></label></div>
     <div class="actions"><button type="submit" class="btn live">Stop clock and complete</button><button type="button" class="btn" data-act="att" data-id="${esc(c.id)}">${clipIcon} Add photos (optional)</button><button type="button" class="btn ghost" data-act="cancel">Cancel</button></div></form>`;
 }
 function requeueForm(c) {
@@ -961,7 +961,7 @@ function vSheet() {
       + (list.length ? `<div class="tiles">${list.map(a => { const ext = (a.name.split('.').pop() || 'file').toUpperCase(), th = S.thumbs[a.id];
         return `<div class="tile"><button type="button" class="th" data-act="att-view" data-aid="${esc(a.id)}" aria-label="Open ${esc(a.name)}">${isImg(a) ? (th ? `<img src="${esc(th)}" alt="">` : 'Photo') : esc(ext.slice(0, 5))}</button>
           <div class="tb"><span class="nm" title="${esc(a.name)}">${esc(a.name)}</span><span class="muted">${fsize(a.size)} · ${fmtT(a.at)}</span><span class="muted">${who(a.by)}${a.stage ? ' · ' + (ST[a.stage] || '') : ''}</span>
-          <label class="vis"><input type="checkbox" id="vis-${esc(a.id)}" data-vis="${esc(a.id)}" ${a.customer_visible ? 'checked' : ''} ${canAttach() ? '' : 'disabled'}>Customer can see</label>${can.admin() ? `<label class="vis"><input type="checkbox" id="asel-${esc(a.id)}" data-asel="${esc(a.id)}" ${S.attSel?.has(a.id) ? 'checked' : ''}>Select to delete</label>` : ''}</div>
+          ${isImg(a) ? '<span class="vis muted">Customer can see (all photos)</span>' : `<label class="vis"><input type="checkbox" id="vis-${esc(a.id)}" data-vis="${esc(a.id)}" ${a.customer_visible ? 'checked' : ''} ${canAttach() ? '' : 'disabled'}>Customer can see</label>`}${can.admin() ? `<label class="vis"><input type="checkbox" id="asel-${esc(a.id)}" data-asel="${esc(a.id)}" ${S.attSel?.has(a.id) ? 'checked' : ''}>Select to delete</label>` : ''}</div>
           <div class="ta">${S.attDel === a.id ? `<button type="button" class="btn sm danger" data-act="att-del-yes" data-aid="${esc(a.id)}">Delete</button><button type="button" class="btn sm ghost" data-act="att-del-no">Keep</button>` : (isImg(a) ? '' : `<button type="button" class="btn sm" data-act="att-view" data-aid="${esc(a.id)}">Download</button>`) + (canDelAtt(a) ? `<button type="button" class="btn sm ghost" data-act="att-del" data-aid="${esc(a.id)}">Delete</button>` : '')}</div></div>`; }).join('')}</div>`
         : `<div class="empty"><b>No photos or files yet.</b><span>Seal photos, damage, survey reports or tally sheets can be attached at any stage.</span></div>`);
   }
