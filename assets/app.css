@@ -441,3 +441,7 @@ body.inv-full{overflow:hidden}
   .dash-side{grid-template-rows:auto minmax(0,1fr)}
   .dash-grid>.dash-next .sec-head,.dash-side>.dash-run .sec-head{position:sticky;top:-16px;z-index:1;background:var(--surface);margin:-16px -16px 0;padding:16px 16px 8px}
 }
+.q-search{display:grid;gap:4px;margin-bottom:8px}
+.q-search input{height:36px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;width:100%}
+.q-search input:focus{outline:2px solid var(--primary);outline-offset:1px}
+.q-search .muted{font-size:12px}

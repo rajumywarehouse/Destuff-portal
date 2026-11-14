@@ -244,16 +244,20 @@ function vDash() {
 }
 const qTop = () => { const n = +(S.qTop ?? (() => { try { return localStorage.getItem('cfs-qtop'); } catch (e) { return null; } })() ?? 10); return [10, 20, 30, 0].includes(n) ? n : 10; };
 function vQueueTiles(q) {
-  const Q_TILES = qTop() || q.length;
+  const Q_TILES = qTop() || q.length, term = String(S.qSearch || '').trim().toUpperCase().replace(/[\s-]/g, '');
   const i0 = S.qPick ? q.findIndex(c => c.id === S.qPick) : -1;
   if (S.qPick && i0 < 0) S.qPick = null;
-  const show = q.slice(0, Q_TILES);
-  return `<div class="rtiles">${show.map((c, i) => { const a = arrMs(c), con = c.consol || (c.customer ? custName(c.customer) : ''), win = i < S.win, pr = S.overrides.get(c.id);
-    return `<button type="button" class="rtile qtile ${i === 0 ? 'head' : win ? 'win' : ''} ${pr ? 'prio' : ''} ${i0 === i ? 'sel' : ''}" data-act="q-pick" data-id="${esc(c.id)}" aria-label="Position ${i + 1}, ${esc(c.containerNo)}${a ? `, waiting ${esc(dur(Date.now() - a))}` : ''}${con ? ', ' + esc(con) : ''}${win ? ', ready to start' : ''}. Tap for actions">
+  const hits = term ? q.map((c, i) => [c, i]).filter(([c]) => [c.containerNo, c.consol, c.customer, c.customer ? custName(c.customer) : '', c.vessel, c.igmNo].some(v => String(v || '').toUpperCase().replace(/[\s-]/g, '').includes(term))) : null;
+  const show = hits ? hits : q.slice(0, Q_TILES).map((c, i) => [c, i]);
+  const search = `<div class="q-search"><input type="search" id="q-search" value="${esc(S.qSearch || '')}" placeholder="Search container, consol, vessel or IGM in the queue" aria-label="Search the job queue" autocomplete="off" spellcheck="false" autocapitalize="characters">${term ? `<span class="muted">${hits.length} match${hits.length === 1 ? '' : 'es'} in the whole queue</span>` : ''}</div>`;
+  if (hits && !hits.length) return search + `<div class="empty"><b>No container in the job queue matches “${esc(S.qSearch)}”.</b><span>It may be awaiting gate-in, on hold, already being destuffed or completed. Check the Inventory tab.</span></div>`;
+  const pk = i0 >= 0 ? i0 : hits && hits.length === 1 ? hits[0][1] : -1;
+  return search + `<div class="rtiles">${show.map(([c, i]) => { const a = arrMs(c), con = c.consol || (c.customer ? custName(c.customer) : ''), win = i < S.win, pr = S.overrides.get(c.id);
+    return `<button type="button" class="rtile qtile ${i === 0 ? 'head' : win ? 'win' : ''} ${pr ? 'prio' : ''} ${pk === i ? 'sel' : ''}" data-act="q-pick" data-id="${esc(c.id)}" aria-label="Position ${i + 1}, ${esc(c.containerNo)}${a ? `, waiting ${esc(dur(Date.now() - a))}` : ''}${con ? ', ' + esc(con) : ''}${win ? ', ready to start' : ''}. Tap for actions">
       <span class="rt-top"><span class="rt-pos">${i + 1}</span><span class="rt-no">${cnoHtml(c.containerNo)}</span></span>
       <span class="rt-clock">${a ? `<span data-since="${a}">${dur(Date.now() - a)}</span>` : '—'}</span><span class="rt-con">${esc(con || '—')}${c.size ? ` · ${esc(c.size)}` : ''}</span></button>`; }).join('')}</div>
-  ${q.length > Q_TILES ? `<p class="hint" style="margin:0">+ ${q.length - Q_TILES} more in the <button type="button" class="linkbtn" data-tab="queue">full job queue</button>.</p>` : ''}
-  ${i0 >= 0 ? `<div class="rt-pick"><div class="rt-pick-h"><span class="muted">Actions for ${esc(q[i0].containerNo)}</span><button type="button" class="btn sm ghost" data-act="q-pick" data-id="${esc(q[i0].id)}">Close</button></div><div class="qlist">${qCard(q[i0], i0, false)}</div></div>`
+  ${!hits && q.length > Q_TILES ? `<p class="hint" style="margin:0">+ ${q.length - Q_TILES} more in the <button type="button" class="linkbtn" data-tab="queue">full job queue</button>.</p>` : ''}
+  ${pk >= 0 ? `<div class="rt-pick"><div class="rt-pick-h"><span class="muted">Actions for ${esc(q[pk].containerNo)} · position ${pk + 1}</span>${i0 >= 0 ? `<button type="button" class="btn sm ghost" data-act="q-pick" data-id="${esc(q[pk].id)}">Close</button>` : ''}</div><div class="qlist">${qCard(q[pk], pk, false)}</div></div>`
     : `<p class="hint" style="margin:0">Waiting time since gate-in. Green = can be started now (first ${S.win}). Tap a container to start, move or hold it.</p>`}`;
 }
 function vRunTiles(runs) {
@@ -1170,6 +1174,7 @@ document.addEventListener('submit', async e => {
 });
 document.addEventListener('input', e => {
   if (!active()) return; const t = e.target;
+  if (t.id === 'q-search') { S.qSearch = t.value; S.qPick = null; scheduleRender(); return; }
   if (t.matches('.grid input:not([type=checkbox])')) {
     const key = t.dataset.key, k = t.dataset.col; let v = t.value;
     if (k === 'containerNo' || k === 'customer') { const up = k === 'containerNo' ? v.toUpperCase().replace(/\s/g, '') : v.toUpperCase(); if (up !== v) { const p = t.selectionStart; t.value = up; try { t.setSelectionRange(p, p); } catch (x) {} } v = up.trim(); }
