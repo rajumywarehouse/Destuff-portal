@@ -223,35 +223,28 @@ function vDash() {
   const all = [...S.containers.values()], cnt = { awaiting: 0, queued: 0, hold: 0, in_progress: 0, completed: 0 }; all.forEach(c => cnt[dispStatus(c)] != null && cnt[dispStatus(c)]++);
   const t0 = dayStart(), today = all.filter(c => c.status === 'completed' && c.completedAt >= t0);
   const q = fifo(), runs = running(), over = runs.filter(c => Date.now() - c.startedAt > SLA_MIN * 6e4).length;
-  return `<div class="dash-fit">
-  <section class="pipe" aria-label="Container flow">
-    <button class="step s1" data-tab="inv" data-filter="awaiting"><span class="lbl">Awaiting arrival</span><b>${cnt.awaiting}</b></button>
-    <button class="step s2" data-tab="queue"><span class="lbl">In job queue</span><b>${cnt.queued}</b>${cnt.hold ? `<small>${cnt.hold} on hold</small>` : ''}</button>
-    <button class="step s3" data-tab="dash"><span class="lbl">Destuffing now</span><b>${cnt.in_progress}</b></button>
-    <button class="step s4" data-tab="done"><span class="lbl">Completed today</span><b>${today.length}</b></button>
-  </section>
-  <div class="cols">
-    <section class="panel" aria-labelledby="h-run">
+  return `<div class="dash-fit dash-grid">
+    <section class="panel dash-next" aria-labelledby="h-next">
+      <div class="sec-head"><div><h2 id="h-next">Next in FIFO</h2><p>Ordered by CFS gate-in time. The first ${S.win} can be started at the same time.</p></div><div class="actions" style="gap:6px;flex-wrap:nowrap"><label class="sr-only" for="q-top">Containers to show</label><select id="q-top" class="sm" data-qtop>${[10, 20, 30, 0].map(n => `<option value="${n}" ${qTop() === n ? 'selected' : ''}>${n ? `Top ${n}` : `All (${q.length})`}</option>`).join('')}</select><button class="btn sm" data-tab="queue">Full queue (${q.length})</button></div></div>
+      ${q.length ? vQueueTiles(q) : `<div class="empty"><b>The queue is empty.</b><span>Containers join the queue once their CFS arrival date and time is entered in Inventory.</span></div>`}
+    </section>
+  <div class="dash-side">
+  <section class="pipe dash-pipe" aria-label="Container flow">
+      <button class="step s1" data-tab="inv" data-filter="awaiting"><span class="lbl">Awaiting arrival</span><b>${cnt.awaiting}</b></button>
+      <button class="step s2" data-tab="queue"><span class="lbl">In job queue</span><b>${cnt.queued}</b>${cnt.hold ? `<small>${cnt.hold} on hold</small>` : ''}</button>
+      <button class="step s3" data-tab="dash"><span class="lbl">Destuffing now</span><b>${cnt.in_progress}</b></button>
+      <button class="step s4" data-tab="done"><span class="lbl">Completed today</span><b>${today.length}</b></button>
+    </section>
+    <section class="panel dash-run" aria-labelledby="h-run">
       <div class="sec-head"><div><h2 id="h-run">Destuffing now</h2><p>Longest-running first. Target ${SLA_MIN / 60} h per container.</p></div>${runs.length ? `<span class="chip">${runs.length} running${over ? ` · ${over} over target` : ''}</span>` : ''}</div>
       ${runs.length ? vRunTiles(runs) : `<div class="empty"><b>No container is being destuffed.</b><span>Start the job at position 1 of the queue to begin the clock.</span></div>`}
-    </section>
-    <section class="panel" aria-labelledby="h-next">
-      <div class="sec-head"><div><h2 id="h-next">Next in FIFO</h2><p>Ordered by CFS gate-in time. The first ${S.win} can be started at the same time.</p></div><button class="btn sm" data-tab="queue">Full queue (${q.length})</button></div>
-      ${q.length ? vQueueTiles(q) : `<div class="empty"><b>The queue is empty.</b><span>Containers join the queue once their CFS arrival date and time is entered in Inventory.</span></div>`}
     </section>
   </div>
   </div>`;
 }
-const photoCount = cid => attsOf(cid).filter(isImg).length;
-function photoBar(c) {
-  const n = photoCount(c.id), busy = S.upBusy?.[c.id];
-  return `<div class="photo-bar">${canAttach() ? `<button type="button" class="btn sm photo-add" data-pick="photos" data-cid="${esc(c.id)}">${camIcon} Add photos</button>` : ''}
-    <button type="button" class="btn sm ghost" data-act="att" data-id="${esc(c.id)}">${n ? `View ${n} photo${n > 1 ? 's' : ''}` : 'No photos yet'}</button>
-    ${n ? `<button type="button" class="btn sm ghost" data-act="report" data-id="${esc(c.id)}" ${S.repBusy === c.id ? 'disabled' : ''}>${S.repBusy === c.id ? 'Making PDF…' : 'Photo report (PDF)'}</button>` : ''}
-    ${busy ? `<span class="up-busy" role="status">${esc(busy)}</span>` : ''}</div>`;
-}
-const Q_TILES = 30;
+const qTop = () => { const n = +(S.qTop ?? (() => { try { return localStorage.getItem('cfs-qtop'); } catch (e) { return null; } })() ?? 10); return [10, 20, 30, 0].includes(n) ? n : 10; };
 function vQueueTiles(q) {
+  const Q_TILES = qTop() || q.length;
   const i0 = S.qPick ? q.findIndex(c => c.id === S.qPick) : -1;
   if (S.qPick && i0 < 0) S.qPick = null;
   const show = q.slice(0, Q_TILES);
@@ -1198,6 +1191,7 @@ document.addEventListener('change', async e => {
   if (t.id === 'viewas') { S.viewAs = t.value || null; S.open = null; if (S.tab === 'team' && !can.admin()) S.tab = 'dash'; render(); }
   else if (t.id === 'done-range') { S.doneRange = t.value; render(); }
   else if (t.id === 'inv-file' || t.id === 'post-file') { onUpload(t.files[0]); t.value = ''; }
+  else if (t.dataset.qtop != null) { S.qTop = +t.value; try { localStorage.setItem('cfs-qtop', String(S.qTop)); } catch (e) {} render(); }
   else if (t.id === 'erp-file') { erpImport([...t.files]); t.value = ''; }
   else if (t.dataset.sel) { t.checked ? S.sel.add(t.dataset.sel) : S.sel.delete(t.dataset.sel); S.bulkDel = false; render(); }
   else if (t.dataset.selAll) { S.gridKeys.filter(x => x[0] === 'c').forEach(x => t.checked ? S.sel.add(x.slice(2)) : S.sel.delete(x.slice(2))); S.bulkDel = false; render(); }

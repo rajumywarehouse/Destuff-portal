@@ -425,3 +425,19 @@ body.inv-full{overflow:hidden}
 .qtile.head .rt-pos{background:var(--primary);color:#fff}
 .qtile.prio .rt-pos{outline:2px solid var(--warn);outline-offset:1px}
 .qtile.sel{border-color:var(--primary);box-shadow:inset 3px 0 0 var(--primary),0 0 0 1px var(--primary)}
+/* Dashboard layout: Next in FIFO full height on the left; counters + Destuffing now on the right */
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.dash-grid{display:grid;gap:16px}
+.dash-side{display:grid;gap:16px;align-content:start;min-height:0}
+.dash-pipe .step{padding:8px 10px 8px 16px}
+.dash-pipe .step .lbl{font-size:10.5px;letter-spacing:.04em}
+.dash-pipe .step b{font-size:26px}
+.dash-pipe .step small{font-size:11px}
+.dash-next select.sm{height:30px;padding:0 8px;font-size:13px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink)}
+@media (max-width:899px){ .dash-grid .dash-next{order:2} .dash-grid .dash-side{order:1} }
+@media (min-width:900px){
+  .dash-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);align-items:stretch}
+  .dash-grid>.dash-next,.dash-side>.dash-run{min-height:0;overflow:auto;overscroll-behavior:contain;align-content:start}
+  .dash-side{grid-template-rows:auto minmax(0,1fr)}
+  .dash-grid>.dash-next .sec-head,.dash-side>.dash-run .sec-head{position:sticky;top:-16px;z-index:1;background:var(--surface);margin:-16px -16px 0;padding:16px 16px 8px}
+}
