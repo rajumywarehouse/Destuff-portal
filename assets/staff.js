@@ -237,7 +237,7 @@ function vDash() {
     </section>
     <section class="panel" aria-labelledby="h-next">
       <div class="sec-head"><div><h2 id="h-next">Next in FIFO</h2><p>Ordered by CFS gate-in time. The first ${S.win} can be started at the same time.</p></div><button class="btn sm" data-tab="queue">Full queue (${q.length})</button></div>
-      ${q.length ? `<div class="qlist">${q.slice(0, 5).map((c, i) => qCard(c, i, false)).join('')}</div>` : `<div class="empty"><b>The queue is empty.</b><span>Containers join the queue once their CFS arrival date and time is entered in Inventory.</span></div>`}
+      ${q.length ? vQueueTiles(q) : `<div class="empty"><b>The queue is empty.</b><span>Containers join the queue once their CFS arrival date and time is entered in Inventory.</span></div>`}
     </section>
   </div>
   </div>`;
@@ -249,6 +249,19 @@ function photoBar(c) {
     <button type="button" class="btn sm ghost" data-act="att" data-id="${esc(c.id)}">${n ? `View ${n} photo${n > 1 ? 's' : ''}` : 'No photos yet'}</button>
     ${n ? `<button type="button" class="btn sm ghost" data-act="report" data-id="${esc(c.id)}" ${S.repBusy === c.id ? 'disabled' : ''}>${S.repBusy === c.id ? 'Making PDF…' : 'Photo report (PDF)'}</button>` : ''}
     ${busy ? `<span class="up-busy" role="status">${esc(busy)}</span>` : ''}</div>`;
+}
+const Q_TILES = 30;
+function vQueueTiles(q) {
+  const i0 = S.qPick ? q.findIndex(c => c.id === S.qPick) : -1;
+  if (S.qPick && i0 < 0) S.qPick = null;
+  const show = q.slice(0, Q_TILES);
+  return `<div class="rtiles">${show.map((c, i) => { const a = arrMs(c), con = c.consol || (c.customer ? custName(c.customer) : ''), win = i < S.win, pr = S.overrides.get(c.id);
+    return `<button type="button" class="rtile qtile ${i === 0 ? 'head' : win ? 'win' : ''} ${pr ? 'prio' : ''} ${i0 === i ? 'sel' : ''}" data-act="q-pick" data-id="${esc(c.id)}" aria-label="Position ${i + 1}, ${esc(c.containerNo)}${a ? `, waiting ${esc(dur(Date.now() - a))}` : ''}${con ? ', ' + esc(con) : ''}${win ? ', ready to start' : ''}. Tap for actions">
+      <span class="rt-top"><span class="rt-pos">${i + 1}</span><span class="rt-no">${cnoHtml(c.containerNo)}</span></span>
+      <span class="rt-clock">${a ? `<span data-since="${a}">${dur(Date.now() - a)}</span>` : '—'}</span><span class="rt-con">${esc(con || '—')}${c.size ? ` · ${esc(c.size)}` : ''}</span></button>`; }).join('')}</div>
+  ${q.length > Q_TILES ? `<p class="hint" style="margin:0">+ ${q.length - Q_TILES} more in the <button type="button" class="linkbtn" data-tab="queue">full job queue</button>.</p>` : ''}
+  ${i0 >= 0 ? `<div class="rt-pick"><div class="rt-pick-h"><span class="muted">Actions for ${esc(q[i0].containerNo)}</span><button type="button" class="btn sm ghost" data-act="q-pick" data-id="${esc(q[i0].id)}">Close</button></div><div class="qlist">${qCard(q[i0], i0, false)}</div></div>`
+    : `<p class="hint" style="margin:0">Waiting time since gate-in. Green = can be started now (first ${S.win}). Tap a container to start, move or hold it.</p>`}`;
 }
 function vRunTiles(runs) {
   const pick = S.runPick && runs.find(c => c.id === S.runPick);
@@ -1094,6 +1107,7 @@ document.addEventListener('click', e => {
     del: () => { S.confirmDel = b.dataset.key; render(); }, 'del-no': () => { S.confirmDel = null; render(); }, 'del-yes': () => deleteRow(b.dataset.key),
     template: downloadTemplate, 'erp-note-close': () => { S.erpNote = ''; render(); }, 'export-inv': exportInv, 'export-done': exportDone, 'sample-load': loadSample, 'sample-clear': clearSample,
     'run-all': () => { S.runAll = !S.runAll; render(); },
+    'q-pick': () => { S.qPick = S.qPick === id ? null : id; if (!S.qPick && S.open) S.open = null; render(); if (S.qPick) setTimeout(() => document.querySelectorAll('.rt-pick').forEach(e => e.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))); },
     'run-pick': () => { S.runPick = S.runPick === id ? null : id; if (!S.runPick && S.open) S.open = null; render(); if (S.runPick) setTimeout(() => $('.rt-pick')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })); },
     'bulk-del': () => { S.bulkDel = true; render(); }, 'bulk-del-no': () => { S.bulkDel = false; render(); }, 'bulk-del-yes': bulkDelete,
     'sel-clear': () => { S.sel.clear(); S.bulkDel = false; render(); },

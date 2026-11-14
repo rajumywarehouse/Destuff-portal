@@ -414,3 +414,14 @@ body.inv-full{overflow:hidden}
 /* Customer portal: notes from the CFS */
 .cnotes{border-left:3px solid var(--primary);background:var(--surface-2);border-radius:6px;padding:8px 10px;display:grid;gap:4px;font-size:13px}
 .cnotes p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+/* Dashboard: compact tiles for Next in FIFO */
+.qtile{box-shadow:inset 3px 0 0 var(--line);position:relative;padding-right:30px}
+.qtile .rt-top{display:block;min-width:0;max-width:100%}
+.qtile .rt-pos{position:absolute;top:5px;right:6px;min-width:20px;height:18px;padding:0 4px;border-radius:9px;background:var(--surface-2);color:var(--muted);font-size:11px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums}
+.qtile .rt-clock{font-size:15px;color:var(--ink)}
+.qtile.win{box-shadow:inset 3px 0 0 var(--ok)}
+.qtile.win .rt-pos{background:var(--ok);color:#fff}
+.qtile.head{box-shadow:inset 3px 0 0 var(--primary);border-color:var(--primary)}
+.qtile.head .rt-pos{background:var(--primary);color:#fff}
+.qtile.prio .rt-pos{outline:2px solid var(--warn);outline-offset:1px}
+.qtile.sel{border-color:var(--primary);box-shadow:inset 3px 0 0 var(--primary),0 0 0 1px var(--primary)}
