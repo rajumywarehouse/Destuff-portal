@@ -242,6 +242,14 @@ function vDash() {
   </div>
   </div>`;
 }
+const photoCount = cid => attsOf(cid).filter(isImg).length;
+function photoBar(c) {
+  const n = photoCount(c.id), busy = S.upBusy?.[c.id];
+  return `<div class="photo-bar">${canAttach() ? `<button type="button" class="btn sm photo-add" data-pick="photos" data-cid="${esc(c.id)}">${camIcon} Add photos</button>` : ''}
+    <button type="button" class="btn sm ghost" data-act="att" data-id="${esc(c.id)}">${n ? `View ${n} photo${n > 1 ? 's' : ''}` : 'No photos yet'}</button>
+    ${n ? `<button type="button" class="btn sm ghost" data-act="report" data-id="${esc(c.id)}" ${S.repBusy === c.id ? 'disabled' : ''}>${S.repBusy === c.id ? 'Making PDF…' : 'Photo report (PDF)'}</button>` : ''}
+    ${busy ? `<span class="up-busy" role="status">${esc(busy)}</span>` : ''}</div>`;
+}
 const qTop = () => { const n = +(S.qTop ?? (() => { try { return localStorage.getItem('cfs-qtop'); } catch (e) { return null; } })() ?? 10); return [10, 20, 30, 0].includes(n) ? n : 10; };
 function vQueueTiles(q) {
   const Q_TILES = qTop() || q.length, term = String(S.qSearch || '').trim().toUpperCase().replace(/[\s-]/g, '');
